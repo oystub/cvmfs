@@ -303,7 +303,7 @@ func ConvertWish(wish WishFriendly, convertAgain, forceDownload bool) (err error
 	}
 	var firstError error
 	for _, expandedImgTag := range wish.ExpandedTagImagesLayer {
-		err = convertInputOutput(expandedImgTag, wish.CvmfsRepo, convertAgain, forceDownload)
+		err = ConvertInputOutput(expandedImgTag, wish.CvmfsRepo, convertAgain, forceDownload)
 		if err != nil && firstError == nil {
 			firstError = err
 		}
@@ -311,7 +311,7 @@ func ConvertWish(wish WishFriendly, convertAgain, forceDownload bool) (err error
 	return firstError
 }
 
-func convertInputOutput(inputImage *Image, repo string, convertAgain, forceDownload bool) (err error) {
+func ConvertInputOutput(inputImage *Image, repo string, convertAgain, forceDownload bool) (err error) {
 	manifest, err := inputImage.GetManifest()
 	if err != nil {
 		return

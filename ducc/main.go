@@ -1,9 +1,10 @@
 package main
 
 import (
-	"github.com/cvmfs/ducc/cmd"
+	daemon "github.com/cvmfs/ducc/daemon"
 )
 
 func main() {
-	cmd.EntryPoint()
+	daemon.Main()
+	//cmd.EntryPoint()
 }

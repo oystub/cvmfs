@@ -19,6 +19,8 @@ func Main() {
 	defer db.Close()
 
 	fullUpdateAllWishes(db)
+
+	select {}
 }
 
 func fullUpdateAllWishes(db *sql.DB) error {
@@ -75,7 +77,7 @@ func fullUpdateAllWishes(db *sql.DB) error {
 				Tag:        img.Tag,
 				Digest:     img.Digest,
 			}
-
+			fmt.Println("Repo: ", wish.CvmfsRepo)
 			err = lib.ConvertInputOutput(&compat_image, wish.CvmfsRepo, false, false)
 			if err != nil && firstError == nil {
 				firstError = err

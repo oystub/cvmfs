@@ -316,6 +316,7 @@ func ConvertInputOutput(inputImage *Image, repo string, convertAgain, forceDownl
 	if err != nil {
 		return
 	}
+	fmt.Println("Got manifest!")
 	manifestPath := filepath.Join("/", "cvmfs", repo, ".metadata", inputImage.GetSimpleName(), "manifest.json")
 	alreadyConverted := AlreadyConverted(manifestPath, manifest.Config.Digest)
 
@@ -337,6 +338,7 @@ func ConvertInputOutput(inputImage *Image, repo string, convertAgain, forceDownl
 	n := notification.NewNotification(NotificationService)
 	n = n.AddField("image", inputImage.GetSimpleName())
 
+	fmt.Println("Starting downloading layers")
 	go func() {
 		noErrors := true
 		var wg sync.WaitGroup

@@ -40,7 +40,7 @@ CREATE table "wish_image" (
 
 CREATE table "layers" (
     "digest" TEXT PRIMARY KEY NOT NULL,
-    "lastDownload" TEXT,
+    "lastDownload" TEXT
 );
 
 create table "image_layer" (

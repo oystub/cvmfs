@@ -1,7 +1,6 @@
-package daemon
+package scheduler
 
 import (
-	"database/sql"
 	"fmt"
 
 	"github.com/cvmfs/ducc/constants"
@@ -11,20 +10,34 @@ import (
 )
 
 func Main() {
-	db, err := sql.Open("sqlite3", "./ducc.db")
-	if err != nil {
-		fmt.Println("Failed to open DB:", err)
-		return
-	}
-	defer db.Close()
-
-	fullUpdateAllWishes(db)
-
+	localdb.Init("./ducc.db")
+	defer localdb.Close()
 	select {}
 }
 
-func fullUpdateAllWishes(db *sql.DB) error {
-	wishes, err := localdb.GetAllWishes(db)
+func AddOrUpdateWish(wish lib.Wish2) (lib.Wish2, error) {
+	id, err := localdb.AddOrUpdateWish(wish)
+	if err != nil {
+		return lib.Wish2{}, err
+	}
+	wish, err = localdb.GetWishById(id)
+	if err != nil {
+		fmt.Println("Failed to retrieve wish after adding it:", err)
+		return lib.Wish2{}, err
+	}
+	return wish, nil
+}
+
+func GetAllWishes() ([]lib.Wish2, error) {
+	wishes, err := localdb.GetAllWishes()
+	if err != nil {
+		return nil, err
+	}
+	return wishes, nil
+}
+
+func fullUpdateAllWishes() error {
+	wishes, err := localdb.GetAllWishes()
 	if err != nil {
 		return err
 	}
@@ -32,7 +45,7 @@ func fullUpdateAllWishes(db *sql.DB) error {
 	// For each wish, retrieve all wanted images
 	fmt.Println("Expanding wildcards and fetching list of wanted images...")
 	for _, wish := range wishes {
-		err := fetchImageListForWish(db, wish.Id)
+		err := fetchImageListForWish(wish.Id)
 		if err != nil {
 			fmt.Println("Failed to retrieve images for wish", wish.Id, ":", err)
 			return err
@@ -42,13 +55,13 @@ func fullUpdateAllWishes(db *sql.DB) error {
 	fmt.Println("Fetching manifests for all images...")
 	// For each wish, get the manifest for each image
 	for _, wish := range wishes {
-		images, err := localdb.GetImagesByWishId(db, wish.Id)
+		images, err := localdb.GetImagesByWishId(wish.Id)
 		if err != nil {
 			return err
 		}
 		fmt.Println("Downloading manifests for the ", len(images), " images referenced by wish", wish.InputUri, ".")
 		for _, image := range images {
-			err := fetchAndStoreImageManifest(db, image.Id)
+			err := fetchAndStoreImageManifest(image.Id)
 			if err != nil {
 				return err
 			}
@@ -60,7 +73,7 @@ func fullUpdateAllWishes(db *sql.DB) error {
 
 	fmt.Println("Converting all images...")
 	for _, wish := range wishes {
-		images, err := localdb.GetImagesByWishId(db, wish.Id)
+		images, err := localdb.GetImagesByWishId(wish.Id)
 		if err != nil {
 			return err
 		}
@@ -88,8 +101,8 @@ func fullUpdateAllWishes(db *sql.DB) error {
 	return nil
 }
 
-func fetchImageListForWish(db *sql.DB, wishId int64) error {
-	wish, err := localdb.GetWishById(db, wishId)
+func fetchImageListForWish(wishId int64) error {
+	wish, err := localdb.GetWishById(wishId)
 	if err != nil {
 		return err
 	}
@@ -103,9 +116,9 @@ func fetchImageListForWish(db *sql.DB, wishId int64) error {
 
 	fmt.Println("Fetching images...")
 	// We wait for all images before interacting with the DB
-	var dbImages []localdb.DbImage
+	var dbImages []lib.Image2
 	for image := range images {
-		db_image := localdb.DbImage{
+		db_image := lib.Image2{
 			Scheme:     image.Scheme,
 			Registry:   image.Registry,
 			Repository: image.Repository,
@@ -115,15 +128,15 @@ func fetchImageListForWish(db *sql.DB, wishId int64) error {
 		dbImages = append(dbImages, db_image)
 		fmt.Println("Got image: ", db_image.Repository, "/", db_image.Tag)
 	}
-	err = localdb.UpdateImagesForWish(db, dbImages, wishId)
+	err = localdb.UpdateImagesForWish(dbImages, wishId)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func fetchAndStoreImageManifest(db *sql.DB, imageId int64) error {
-	imagePair, err := localdb.GetImageById(db, imageId)
+func fetchAndStoreImageManifest(imageId int64) error {
+	imagePair, err := localdb.GetImageById(imageId)
 	if err != nil {
 		return err
 	}
@@ -143,7 +156,7 @@ func fetchAndStoreImageManifest(db *sql.DB, imageId int64) error {
 		return err
 	}
 
-	err = localdb.UpdateManifestForImage(db, manifest, imageId)
+	err = localdb.UpdateManifestForImage(manifest, imageId)
 	if err != nil {
 		return err
 	}

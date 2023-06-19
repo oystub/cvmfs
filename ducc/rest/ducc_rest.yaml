@@ -1,0 +1,332 @@
+openapi: "3.0.0"
+info:
+  version: "1.0.0"
+  title: "Ducc REST API"
+  description: "" #TODO
+servers: #TODO
+
+paths:
+  /wishes:
+    get:
+      summary: "Returns all wishes" 
+      description: "" #TODO
+      operationId: "getWishes"
+      responses:
+        200:
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Wish"
+        default:
+          description: "Unxepected error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      summary: "Creates a new wish"
+      description: "" #TODO
+      operationId: "addWish"
+      requestBody:
+        description: "Wish to be added"
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewWish"
+      responses:
+        202:
+          description: "Accepted"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        default:
+          description: "Unxepected error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /wishes/{id}:
+    get:
+      summary: "Returns a wish by ID"
+      description: "" #TODO
+      operationId: "getWishById"
+      parameters:
+        - name: "id"
+          in: "path"
+          description: "ID of wish to return"
+          required: true
+          schema:
+            type: "integer"
+            format: "int64"
+      responses:
+        200:
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Wish"
+        404:
+          description: "Wish not found"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        default:
+          description: "Unxepected error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /wishes/{id}/sync:
+    post:
+      summary: "Synchronizes a wish by ID"
+      description: "" #TODO
+      operationId: "syncWishById"
+      parameters:
+        - name: "id"
+          in: "path"
+          description: "ID of wish to synchronize"
+          required: true
+          schema:
+            type: "integer"
+            format: "int64"
+      responses:
+        202:
+          description: "Accepted"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        404:
+          description: "Wish not found"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        default:
+          description: "Unxepected error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    /wishes/{id}/jobs:
+      get:
+        summary: "Returns all jobs for a wish"
+        description: "" #TODO
+        operationId: "getJobsByWishId"
+        parameters:
+          - name: "id"
+            in: "path"
+            description: "ID of wish to return jobs for"
+            required: true
+            schema:
+              type: "integer"
+              format: "int64"
+        responses:
+          200:
+            description: "OK"
+            content:
+              application/json:
+                schema:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/Job"
+          404:
+            description: "Wish not found"
+            content:
+              application/json:
+                schema:
+                  $ref: "#/components/schemas/Error"
+          default:
+            description: "Unxepected error"
+            content:
+              application/json:
+                schema:
+                  $ref: "#/components/schemas/Error"
+    /jobs:
+      get:
+        summary: "Returns all jobs"
+        description: "" #TODO
+        operationId: "getJobs"
+        responses:
+          200:
+            description: "OK"
+            content:
+              application/json:
+                schema:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/Job"
+          default:
+            description: "Unxepected error"
+            content:
+              application/json:
+                schema:
+                  $ref: "#/components/schemas/Error"
+    /jobs/{id}:
+      get:
+        summary: "Returns a job by ID"
+        description: "" #TODO
+        operationId: "getJobById"
+        parameters:
+          - name: "id"
+            in: "path"
+            description: "ID of job to return"
+            required: true
+            schema:
+              type: "integer"
+              format: "int64"
+        responses:
+          200:
+            description: "OK"
+            content:
+              application/json:
+                schema:
+                  $ref: "#/components/schemas/Job"
+          404:
+            description: "Job not found"
+            content:
+              application/json:
+                schema:
+                  $ref: "#/components/schemas/Error"
+          default:
+            description: "Unxepected error"
+            content:
+              application/json:
+                schema:
+                  $ref: "#/components/schemas/Error"
+components:
+  schemas:
+    Wish:
+      type: object
+      required:
+        - id
+        - inputUri
+        - cvmfsRepo
+        - source
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: "ID of wish"
+        inputUri:
+          type: string
+          description: "Url on the format REGISTRY/REPOSITORY[:TAG][@DIGEST] for the image to be converted. The tag can contain wildcard characters, `*`."
+        cvmfsRepo:
+          type: string
+          description: "The target CernVM-FS repository to store the layers and the flat root file systems."
+        source:
+          type: string
+          description: "Unique identifier of the source of the wish. This is used to avoid duplicate wishes."
+        
+        overwriteLayers:
+          type: string
+          description: "Overwrite layers that are already present in the CernVM-FS repository."
+          x-go-type: "lib.OptionalBool"
+        convertAgain:
+          type: string
+          description: "Convert again images that are already successfull converted."
+          x-go-type: "lib.OptionalBool"
+        
+        createLayers:
+          type: string
+          description: "Do not unpack the layers into the repository. If this is disabled, `createThinImage` and `createPodman` must also be disabled."
+          x-go-type: "lib.OptionalBool"
+        createThinImage:
+          type: string
+          description: "Create and push a thin image (compatible with docker). To enable, `createLayers` must also be enabled."
+          x-go-type: "lib.OptionalBool"
+        createPodman:
+          type: string
+          description: "Create Podman image store. To enable, `createLayers` must also be enabled."
+          x-go-type: "lib.OptionalBool"
+        createFlat:
+          type: string
+          description: "Create a flat image (compatible with singularity)"
+          x-go-type: "lib.OptionalBool"
+        webhookEnabled:
+          type: string
+          description: "Automatically trigger uptates upon receiving incoming webhooks. (Harbor webhooks are supported)"
+          x-go-type: "lib.OptionalBool"
+        fullSyncIntervalSec:
+          type: string
+          description: "Automatically trigger full syncs at regular intervals. (0 to disable)"
+        
+        lastConfigUpdate:
+          type: string
+          format: date-time
+          description: "The time when the configuration was last updated"
+        lastFullSyncStarted:
+          type: string
+          format: date-time
+          description: "The time when the last full sync was started"
+        lastFullSyncFinished:
+          type: string
+          format: date-time
+          description: "The time when the last full sync was finished"
+        
+    NewWish:
+      type: object
+      required:
+        - uri
+        - cvmfsRepo
+      properties:
+        uri:
+          type: string
+          description: "Image uri on the format REGISTRY/REPOSITORY[:TAG][@DIGEST]" #TODO
+        cvmfsRepo:
+          type: string
+          description: "The target CernVM-FS repository to store the layers and the flat root file systems."
+    Job:
+      type: object
+      required:
+        - id
+        - wish
+        - status
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: "ID of job"
+        wish:
+          $ref: "#/components/schemas/Wish"
+        status:
+          type: string
+          enum:
+            - "pending"
+            - "running"
+            - "failed"
+            - "succeeded"
+          description: "Status of job"
+        createdAt:
+          type: string
+          format: date-time
+          description: "Time when job was created"
+        startedAt:
+          type: string
+          format: date-time
+          description: "Time when job was started"
+        finishedAt:
+          type: string
+          format: date-time
+          description: "Time when job was finished"
+        error:
+          type: string
+          description: "Error message if job failed"
+    Error:
+      type: object
+      required:
+        - message
+        - code
+      properties:
+        message:
+          type: string
+          description: "Error message"
+        code:
+          type: integer
+          description: "Error code"

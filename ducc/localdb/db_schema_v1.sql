@@ -5,15 +5,15 @@ CREATE table "wishes" (
     "outputUri" TEXT NOT NULL,
     "source" TEXT NOT NULL,
 
-    "createLayers" INTEGER NOT NULL,
-    "createThinImage" INTEGER NOT NULL,
-    "createPodman" INTEGER NOT NULL,
-    "createFlat" INTEGER NOT NULL,
+    "createLayers" INTEGER NOT NULL DEFAULT 0,
+    "createThinImage" INTEGER NOT NULL DEFAULT 0,
+    "createPodman" INTEGER NOT NULL DEFAULT 0,
+    "createFlat" INTEGER NOT NULL DEFAULT 0,
 
-    "webhookEnabled" INTEGER,
-	"fullSyncIntervalSec" INTEGER,
-	"lastConfigUpdate" TEXT,
-	"lastFullSync" TEXT
+    "webhookEnabled" INTEGER NOT NULL DEFAULT 0,
+	"fullSyncIntervalSec" INTEGER NOT NULL DEFAULT 0,
+	"lastConfigUpdate" INTEGER NOT NULL DEFAULT -1,
+	"lastFullSync" INTEGER NOT NULL DEFAULT -1
 );
 
 CREATE table "images" (
@@ -50,3 +50,5 @@ create table "image_layer" (
     FOREIGN KEY ("imageId") REFERENCES "images" ("id"),
     FOREIGN KEY ("layerDigest") REFERENCES "layers" ("digest")
 );
+
+PRAGMA user_version = 1;

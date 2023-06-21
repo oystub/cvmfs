@@ -28,10 +28,10 @@ paths:
                 $ref: "#/components/schemas/Error"
     post:
       summary: "Creates a new wish"
-      description: "" #TODO
-      operationId: "addWish"
+      description: "Creates a new wish"
+      operationId: "createWish"
       requestBody:
-        description: "Wish to be added"
+        description: "Wish to be created"
         required: true
         content:
           application/json:

@@ -1,7 +1,7 @@
 package lib
 
 type Image2 struct {
-	Id int64
+	Id ObjectId
 
 	Scheme     string
 	Registry   string

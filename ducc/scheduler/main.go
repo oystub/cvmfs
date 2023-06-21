@@ -9,18 +9,20 @@ import (
 	"github.com/cvmfs/ducc/localdb"
 )
 
+var db localdb.LocalDb
+
 func Main() {
-	localdb.Init("./ducc.db")
-	defer localdb.Close()
+	db.Init("./ducc.db")
+	defer db.Close()
 	select {}
 }
 
 func AddOrUpdateWish(wish lib.Wish2) (lib.Wish2, error) {
-	id, err := localdb.AddOrUpdateWish(wish)
+	id, err := db.CreateOrUpdateWish(wish)
 	if err != nil {
 		return lib.Wish2{}, err
 	}
-	wish, err = localdb.GetWishById(id)
+	wish, err = db.GetWishById(id)
 	if err != nil {
 		fmt.Println("Failed to retrieve wish after adding it:", err)
 		return lib.Wish2{}, err
@@ -29,7 +31,7 @@ func AddOrUpdateWish(wish lib.Wish2) (lib.Wish2, error) {
 }
 
 func GetAllWishes() ([]lib.Wish2, error) {
-	wishes, err := localdb.GetAllWishes()
+	wishes, err := db.GetAllWishes()
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +39,7 @@ func GetAllWishes() ([]lib.Wish2, error) {
 }
 
 func fullUpdateAllWishes() error {
-	wishes, err := localdb.GetAllWishes()
+	wishes, err := db.GetAllWishes()
 	if err != nil {
 		return err
 	}
@@ -55,7 +57,7 @@ func fullUpdateAllWishes() error {
 	fmt.Println("Fetching manifests for all images...")
 	// For each wish, get the manifest for each image
 	for _, wish := range wishes {
-		images, err := localdb.GetImagesByWishId(wish.Id)
+		images, err := db.GetImagesByWishId(wish.Id)
 		if err != nil {
 			return err
 		}
@@ -73,7 +75,7 @@ func fullUpdateAllWishes() error {
 
 	fmt.Println("Converting all images...")
 	for _, wish := range wishes {
-		images, err := localdb.GetImagesByWishId(wish.Id)
+		images, err := db.GetImagesByWishId(wish.Id)
 		if err != nil {
 			return err
 		}
@@ -101,8 +103,8 @@ func fullUpdateAllWishes() error {
 	return nil
 }
 
-func fetchImageListForWish(wishId int64) error {
-	wish, err := localdb.GetWishById(wishId)
+func fetchImageListForWish(wishId lib.ObjectId) error {
+	wish, err := db.GetWishById(wishId)
 	if err != nil {
 		return err
 	}
@@ -128,15 +130,15 @@ func fetchImageListForWish(wishId int64) error {
 		dbImages = append(dbImages, db_image)
 		fmt.Println("Got image: ", db_image.Repository, "/", db_image.Tag)
 	}
-	err = localdb.UpdateImagesForWish(dbImages, wishId)
+	err = db.UpdateImagesForWish(dbImages, wishId)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func fetchAndStoreImageManifest(imageId int64) error {
-	imagePair, err := localdb.GetImageById(imageId)
+func fetchAndStoreImageManifest(imageId lib.ObjectId) error {
+	imagePair, err := db.GetImageById(imageId)
 	if err != nil {
 		return err
 	}
@@ -156,7 +158,7 @@ func fetchAndStoreImageManifest(imageId int64) error {
 		return err
 	}
 
-	err = localdb.UpdateManifestForImage(manifest, imageId)
+	err = db.UpdateManifestForImage(manifest, imageId)
 	if err != nil {
 		return err
 	}

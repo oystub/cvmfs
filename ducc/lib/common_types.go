@@ -2,7 +2,11 @@ package lib
 
 type OptionalBool int
 
-const INVALID_ID int64 = -1
+type ObjectId int64
+
+const INVALID_OBJECT_ID ObjectId = -1
+
+const DATE_FORMAT = "2006-01-02T15:04:05.999Z"
 
 const (
 	OB_DEFAULT OptionalBool = iota

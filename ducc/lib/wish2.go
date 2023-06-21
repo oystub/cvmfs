@@ -1,7 +1,9 @@
 package lib
 
+import "time"
+
 type Wish2 struct {
-	Id int64
+	Id ObjectId
 
 	CvmfsRepo string
 	InputUri  string
@@ -16,6 +18,6 @@ type Wish2 struct {
 	WebhookEnabled      OptionalBool
 	FullSyncIntervalSec int64
 
-	LastConfigUpdate int64
-	LastFullSync     int64
+	LastConfigUpdate time.Time
+	LastFullSync     time.Time
 }

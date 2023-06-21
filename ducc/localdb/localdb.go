@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	_ "embed"
 
@@ -14,16 +15,18 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-var db *sql.DB
+type LocalDb struct {
+	db *sql.DB
+}
 
 const db_schema_version = 1
 
 //go:embed db_schema_v1.sql
 var db_schema string
 
-func Init(databasePath string) error {
+func (this *LocalDb) Init(databasePath string) error {
 	var err error
-	db, err = sql.Open("sqlite3", databasePath)
+	this.db, err = sql.Open("sqlite3", databasePath)
 	if err != nil {
 		fmt.Println("Failed to open DB:", err)
 		return err
@@ -32,7 +35,7 @@ func Init(databasePath string) error {
 	// Create the tables if they don't exist
 	// Check the user version of the DB to see if we need to create the tables
 	var userVersion int
-	err = db.QueryRow("PRAGMA user_version").Scan(&userVersion)
+	err = this.db.QueryRow("PRAGMA user_version").Scan(&userVersion)
 	if err != nil {
 		fmt.Println("Failed to get user version of the DB:", err)
 		return err
@@ -47,8 +50,7 @@ func Init(databasePath string) error {
 	}
 
 	// The DB is empty, we need to create the tables
-	fmt.Println("Creating tables in the DB...")
-	_, err = db.Exec(db_schema)
+	_, err = this.db.Exec(db_schema)
 
 	if err != nil {
 		fmt.Println("Failed to create tables in the DB:", err)
@@ -58,100 +60,206 @@ func Init(databasePath string) error {
 	return nil
 }
 
-func Close() {
-	db.Close()
+func (this *LocalDb) Close() {
+	this.db.Close()
 }
 
-func AddOrUpdateWish(wish lib.Wish2) (int64, error) {
-	tx, err := db.Begin()
+func (this *LocalDb) CreateOrUpdateWish(wish lib.Wish2) (lib.ObjectId, error) {
+	tx, err := this.db.Begin()
 	defer tx.Rollback() // The rollback will be ignored if the tx has been committed later in the function
 
 	alreadyExists, id, err := wishExists(tx, wish)
 	if err != nil {
-		return lib.INVALID_ID, err
+		return lib.INVALID_OBJECT_ID, err
 	}
 	if alreadyExists {
 		// The wish already exists, but should be updated with potential new values
-		log.Println("Wish already exists, updating it...")
-		stmnt := "UPDATE wishes SET createLayers = ?, createThinImage = ?, createPodman = ?, createFlat = ? WHERE id = ?"
-		_, err := tx.Exec(stmnt, wish.CreateLayers, wish.CreateThinImage, wish.CreatePodman, wish.CreateFlat, id)
+		stmnt := `UPDATE wishes SET 
+			outputUri = ?,
+
+			createLayers = ?, 
+			createThinImage = ?, 
+			createPodman = ?, 
+			createFlat = ?,
+
+			webhookEnabled = ?, 
+			fullSyncIntervalSec = ?,
+
+			lastConfigUpdate = ?  
+
+			WHERE id = ?`
+		_, err := tx.Exec(stmnt,
+			wish.OutputUri,
+
+			wish.CreateLayers,
+			wish.CreateThinImage,
+			wish.CreatePodman,
+			wish.CreateFlat,
+
+			wish.WebhookEnabled,
+			wish.FullSyncIntervalSec,
+
+			time.Now().Format(lib.DATE_FORMAT),
+			id)
 		if err != nil {
-			return lib.INVALID_ID, err
+			return lib.INVALID_OBJECT_ID, err
 		}
 	} else {
-		log.Println("Wish does not exist, inserting it...")
-		stmnt := "INSERT INTO wishes (cvmfsRepo, inputUri, outputUri, source, createLayers, createThinImage, createPodman, createFlat) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-		res, err := tx.Exec(stmnt, wish.CvmfsRepo, wish.InputUri, wish.OutputUri, wish.Source, wish.CreateLayers, wish.CreateThinImage, wish.CreatePodman, wish.CreateFlat)
+		stmnt := `INSERT INTO wishes (
+			cvmfsRepo, 
+			inputUri,
+			outputUri,
+			source,
+			
+			createLayers,
+			createThinImage,
+			createPodman,
+			createFlat,
+			
+			webhookEnabled,
+			fullSyncIntervalSec,
+			lastConfigUpdate) 
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		res, err := tx.Exec(stmnt,
+			wish.CvmfsRepo,
+			wish.InputUri,
+			wish.OutputUri,
+			wish.Source,
+			wish.CreateLayers,
+			wish.CreateThinImage,
+			wish.CreatePodman,
+			wish.CreateFlat,
+			wish.WebhookEnabled,
+			wish.FullSyncIntervalSec,
+			time.Now().Format(lib.DATE_FORMAT))
 		if err != nil {
-			return lib.INVALID_ID, err
+			return lib.INVALID_OBJECT_ID, err
 		}
-		id, err = res.LastInsertId()
+		rawId, err := res.LastInsertId()
 		if err != nil {
-			return lib.INVALID_ID, err
+			return lib.INVALID_OBJECT_ID, err
 		}
+		id = lib.ObjectId(rawId)
 	}
 
 	// We have updated or inserted the wish, and ready to commit
 	err = tx.Commit()
 	if err != nil {
 		log.Println("Failed to commit transaction:", err)
-		return lib.INVALID_ID, err
+		return lib.INVALID_OBJECT_ID, err
 	}
 	return id, nil
 
 }
 
-func wishExists(tx *sql.Tx, wish lib.Wish2) (bool, int64, error) {
-	// We say that a wish already exists if there is already one in the DB with the same cvmfsRepo, inputUri, outputUri and source
-	stmnt := "SELECT id FROM wishes WHERE cvmfsRepo = ? AND inputUri = ? AND outputUri = ? AND source = ?"
-	rows, err := tx.Query(stmnt, wish.CvmfsRepo, wish.InputUri, wish.OutputUri, wish.Source)
+func wishExists(tx *sql.Tx, wish lib.Wish2) (bool, lib.ObjectId, error) {
+	// We say that a wish already exists if there is already one in the DB with the same cvmfsRepo, inputUri, and source
+	stmnt := "SELECT id FROM wishes WHERE cvmfsRepo = ? AND inputUri = ?  AND source = ?"
+	rows, err := tx.Query(stmnt, wish.CvmfsRepo, wish.InputUri, wish.Source)
 	if err != nil {
-		return false, lib.INVALID_ID, err
+		return false, lib.INVALID_OBJECT_ID, err
 	}
 	defer rows.Close()
 
-	var id int64
+	var id lib.ObjectId
 	for rows.Next() {
 		err = rows.Scan(&id)
 		if err != nil {
-			return false, lib.INVALID_ID, err
+			return false, lib.INVALID_OBJECT_ID, err
 		}
 	}
 	err = rows.Err()
 	if err != nil {
-		return false, lib.INVALID_ID, err
+		return false, lib.INVALID_OBJECT_ID, err
 	}
 	if id == 0 {
-		return false, lib.INVALID_ID, nil
+		return false, lib.INVALID_OBJECT_ID, nil
 	}
 	return true, id, nil
 }
 
-func GetWishById(id int64) (lib.Wish2, error) {
-	stmnt := "SELECT id, cvmfsRepo, inputUri, outputUri, source, createLayers, createThinImage, createPodman, createFlat, webhookEnabled, fullSyncIntervalSec, lastConfigUpdate, lastFullSync FROM wishes WHERE id = ?"
-	rows, err := db.Query(stmnt, id)
+func (this *LocalDb) GetWishById(id lib.ObjectId) (lib.Wish2, error) {
+	stmnt := `SELECT 
+		id,
+		cvmfsRepo,
+		inputUri,
+		outputUri,
+		source,
+
+		createLayers,
+		createThinImage,
+		createPodman,
+		createFlat,
+
+		webhookEnabled,
+		fullSyncIntervalSec,
+
+		lastConfigUpdate,
+		lastFullSync
+
+		FROM wishes 
+		WHERE id = ?`
+	rows, err := this.db.Query(stmnt, id)
 	if err != nil {
 		return lib.Wish2{}, err
 	}
 	defer rows.Close()
 
 	var wish lib.Wish2
-	for rows.Next() {
-		err = rows.Scan(&wish.Id, &wish.CvmfsRepo, &wish.InputUri, &wish.OutputUri, &wish.Source, &wish.CreateLayers, &wish.CreateThinImage, &wish.CreatePodman, &wish.CreateFlat, &wish.WebhookEnabled, &wish.FullSyncIntervalSec, &wish.LastConfigUpdate, &wish.LastFullSync)
-		if err != nil {
-			return lib.Wish2{}, err
-		}
+	if !rows.Next() {
+		return lib.Wish2{}, sql.ErrNoRows
 	}
+
+	var lastConfigUpdateStr, lastFullSyncStr string
+	err = rows.Scan(
+		&wish.Id,
+		&wish.CvmfsRepo,
+		&wish.InputUri,
+		&wish.OutputUri,
+		&wish.Source,
+		&wish.CreateLayers,
+		&wish.CreateThinImage,
+		&wish.CreatePodman,
+		&wish.CreateFlat,
+		&wish.WebhookEnabled,
+		&wish.FullSyncIntervalSec,
+		&lastConfigUpdateStr,
+		&lastFullSyncStr)
+	wish.LastConfigUpdate, _ = time.Parse(lib.DATE_FORMAT, lastConfigUpdateStr)
+	wish.LastFullSync, _ = time.Parse(lib.DATE_FORMAT, lastFullSyncStr)
+	if err != nil {
+		return lib.Wish2{}, err
+	}
+
 	err = rows.Err()
 	if err != nil {
 		return lib.Wish2{}, err
 	}
+
 	return wish, nil
 }
 
-func GetAllWishes() ([]lib.Wish2, error) {
-	stmnt := "SELECT * FROM wishes"
-	rows, err := db.Query(stmnt)
+func (this *LocalDb) GetAllWishes() ([]lib.Wish2, error) {
+	stmnt := `SELECT 
+			id,
+			cvmfsRepo,
+			inputUri,
+			outputUri,
+			source,
+
+			createLayers,
+			createThinImage,
+			createPodman,
+			createFlat,
+
+			webhookEnabled,
+			fullSyncIntervalSec,
+
+			lastConfigUpdate,
+			lastFullSync
+
+			FROM wishes`
+	rows, err := this.db.Query(stmnt)
 	if err != nil {
 		fmt.Println("Failed to get wishes from the DB:", err)
 		return nil, err
@@ -161,7 +269,26 @@ func GetAllWishes() ([]lib.Wish2, error) {
 	var wishes []lib.Wish2
 	for rows.Next() {
 		var wish lib.Wish2
-		err = rows.Scan(&wish.Id, &wish.CvmfsRepo, &wish.InputUri, &wish.OutputUri, &wish.Source, &wish.CreateLayers, &wish.CreateThinImage, &wish.CreatePodman, &wish.CreateFlat, &wish.WebhookEnabled, &wish.FullSyncIntervalSec, &wish.LastConfigUpdate, &wish.LastFullSync)
+		var lastConfigUpdateStr, lastFullSyncStr string
+		err = rows.Scan(
+			&wish.Id,
+			&wish.CvmfsRepo,
+			&wish.InputUri,
+			&wish.OutputUri,
+			&wish.Source,
+
+			&wish.CreateLayers,
+			&wish.CreateThinImage,
+			&wish.CreatePodman,
+			&wish.CreateFlat,
+
+			&wish.WebhookEnabled,
+			&wish.FullSyncIntervalSec,
+
+			&lastConfigUpdateStr,
+			&lastFullSyncStr)
+		wish.LastConfigUpdate, _ = time.Parse(lib.DATE_FORMAT, lastConfigUpdateStr)
+		wish.LastFullSync, _ = time.Parse(lib.DATE_FORMAT, lastFullSyncStr)
 		if err != nil {
 			fmt.Println("Failed to scan wish:", err)
 			return nil, err
@@ -173,38 +300,12 @@ func GetAllWishes() ([]lib.Wish2, error) {
 		fmt.Println("Failed to get wishes from the DB:", err)
 		return nil, err
 	}
-
-	fmt.Printf("%+v", wishes)
 	return wishes, nil
 }
 
-func getDanglingImages() ([]lib.Image2, error) {
-	stmnt := "SELECT id, scheme, registry, repository, tag, digest FROM images WHERE id NOT IN (SELECT imageId FROM wish_image)"
-	rows, err := db.Query(stmnt)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var images []lib.Image2
-	for rows.Next() {
-		var image lib.Image2
-		err = rows.Scan(&image.Id, &image.Scheme, &image.Registry, &image.Repository, &image.Tag, &image.Digest)
-		if err != nil {
-			return nil, err
-		}
-		images = append(images, image)
-	}
-	err = rows.Err()
-	if err != nil {
-		return nil, err
-	}
-	return images, nil
-}
-
-func GetImagesByWishId(wishId int64) ([]lib.Image2, error) {
+func (this *LocalDb) GetImagesByWishId(wishId lib.ObjectId) ([]lib.Image2, error) {
 	stmnt := "SELECT id, scheme, registry, repository, tag, digest FROM images WHERE id IN (SELECT imageId FROM wish_image WHERE wishId = ?)"
-	rows, err := db.Query(stmnt, wishId)
+	rows, err := this.db.Query(stmnt, wishId)
 	if err != nil {
 		return nil, err
 	}
@@ -227,9 +328,9 @@ func GetImagesByWishId(wishId int64) ([]lib.Image2, error) {
 	return images, nil
 }
 
-func UpdateImagesForWish(images []lib.Image2, wishId int64) error {
+func (this *LocalDb) UpdateImagesForWish(images []lib.Image2, wishId lib.ObjectId) error {
 
-	tx, err := db.Begin()
+	tx, err := this.db.Begin()
 	defer tx.Rollback() // The rollback will be ignored if the tx has been committed later in the function
 	// Remove all existing images from the wish
 	fmt.Println("Got list of images, updating DB...")
@@ -258,69 +359,69 @@ func UpdateImagesForWish(images []lib.Image2, wishId int64) error {
 	return nil
 }
 
-func addImageForWish(tx *sql.Tx, image lib.Image2, wishId int64) (int64, error) {
+func addImageForWish(tx *sql.Tx, image lib.Image2, wishId lib.ObjectId) (lib.ObjectId, error) {
 	alreadyExists, existing_id, err := imageExists(tx, image)
 	if err != nil {
-		return lib.INVALID_ID, err
+		return lib.INVALID_OBJECT_ID, err
 	}
-	var image_id int64 = existing_id
+	var image_id lib.ObjectId = existing_id
 	if alreadyExists {
 		// Image already exists, we just need to add the link to the wish
 		stmnt := "INSERT INTO wish_image (wishId, imageId) VALUES (?, ?)"
 		_, err := tx.Exec(stmnt, wishId, existing_id)
 		if err != nil {
-			return lib.INVALID_ID, err
+			return lib.INVALID_OBJECT_ID, err
 		}
 	} else {
 		// Image does not exist, we need to add it and then add the link to the wish
 		stmnt := "INSERT INTO images (scheme, registry, repository, tag, digest) VALUES (?, ?, ?, ?, ?)"
 		res, err := tx.Exec(stmnt, image.Scheme, image.Registry, image.Repository, image.Tag, image.Digest)
 		if err != nil {
-			return lib.INVALID_ID, err
+			return lib.INVALID_OBJECT_ID, err
 		}
 		image_id, err := res.LastInsertId()
 		if err != nil {
-			return lib.INVALID_ID, err
+			return lib.INVALID_OBJECT_ID, err
 		}
 		stmnt = "INSERT INTO wish_image (wishId, imageId) VALUES (?, ?)"
 		_, err = tx.Exec(stmnt, wishId, image_id)
 		if err != nil {
-			return lib.INVALID_ID, err
+			return lib.INVALID_OBJECT_ID, err
 		}
 
 	}
 	return image_id, nil
 }
 
-func imageExists(tx *sql.Tx, image lib.Image2) (bool, int64, error) {
+func imageExists(tx *sql.Tx, image lib.Image2) (bool, lib.ObjectId, error) {
 	// We say that an image already exists if there is already one in the DB with the same scheme, registry, repository, tag and digest
 	stmnt := "SELECT id FROM images WHERE scheme = ? AND registry = ? AND repository = ? AND tag = ? AND digest = ?"
 	rows, err := tx.Query(stmnt, image.Scheme, image.Registry, image.Repository, image.Tag, image.Digest)
 	if err != nil {
-		return false, lib.INVALID_ID, err
+		return false, lib.INVALID_OBJECT_ID, err
 	}
 	defer rows.Close()
 
-	var id int64
+	var id lib.ObjectId
 	for rows.Next() {
 		err = rows.Scan(&id)
 		if err != nil {
-			return false, lib.INVALID_ID, err
+			return false, lib.INVALID_OBJECT_ID, err
 		}
 	}
 	err = rows.Err()
 	if err != nil {
-		return false, lib.INVALID_ID, err
+		return false, lib.INVALID_OBJECT_ID, err
 	}
 	if id == 0 {
-		return false, lib.INVALID_ID, nil
+		return false, lib.INVALID_OBJECT_ID, nil
 	}
 	return true, id, nil
 }
 
-func GetImageById(id int64) (lib.Image2, error) {
+func (this *LocalDb) GetImageById(id lib.ObjectId) (lib.Image2, error) {
 	stmnt := "SELECT scheme, registry, repository, tag, digest FROM images WHERE id = ?"
-	rows, err := db.Query(stmnt, id)
+	rows, err := this.db.Query(stmnt, id)
 	if err != nil {
 		return lib.Image2{}, err
 	}
@@ -340,8 +441,8 @@ func GetImageById(id int64) (lib.Image2, error) {
 	return image, nil
 }
 
-func UpdateManifestForImage(manifest dockerutil.Manifest, imageId int64) error {
-	tx, err := db.Begin()
+func (this *LocalDb) UpdateManifestForImage(manifest dockerutil.Manifest, imageId lib.ObjectId) error {
+	tx, err := this.db.Begin()
 	if err != nil {
 		return err
 	}

@@ -12,8 +12,8 @@ CREATE table "wishes" (
 
     "webhookEnabled" INTEGER NOT NULL DEFAULT 0,
 	"fullSyncIntervalSec" INTEGER NOT NULL DEFAULT 0,
-	"lastConfigUpdate" INTEGER NOT NULL DEFAULT -1,
-	"lastFullSync" INTEGER NOT NULL DEFAULT -1
+	"lastConfigUpdate" TEXT NOT NULL DEFAULT "",
+	"lastFullSync" TEXT NOT NULL DEFAULT ""
 );
 
 CREATE table "images" (

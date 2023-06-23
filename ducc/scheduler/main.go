@@ -5,6 +5,7 @@ import (
 
 	"github.com/cvmfs/ducc/constants"
 	cvmfs "github.com/cvmfs/ducc/cvmfs"
+	dockerutil "github.com/cvmfs/ducc/docker-api"
 	"github.com/cvmfs/ducc/lib"
 	"github.com/cvmfs/ducc/localdb"
 )
@@ -63,7 +64,7 @@ func fullUpdateAllWishes() error {
 		}
 		fmt.Println("Downloading manifests for the ", len(images), " images referenced by wish", wish.InputUri, ".")
 		for _, image := range images {
-			err := fetchAndStoreImageManifest(image.Id)
+			_, err := fetchAndStoreImageManifest(image.Id)
 			if err != nil {
 				return err
 			}
@@ -137,10 +138,10 @@ func fetchImageListForWish(wishId lib.ObjectId) error {
 	return nil
 }
 
-func fetchAndStoreImageManifest(imageId lib.ObjectId) error {
+func fetchAndStoreImageManifest(imageId lib.ObjectId) (dockerutil.Manifest, error) {
 	imagePair, err := db.GetImageById(imageId)
 	if err != nil {
-		return err
+		return dockerutil.Manifest{}, err
 	}
 
 	image := lib.Image{
@@ -155,12 +156,12 @@ func fetchAndStoreImageManifest(imageId lib.ObjectId) error {
 	manifest, err := image.GetManifest()
 	if err != nil {
 		fmt.Println("Failed to get manifest:", err)
-		return err
+		return dockerutil.Manifest{}, err
 	}
 
 	err = db.UpdateManifestForImage(manifest, imageId)
 	if err != nil {
-		return err
+		return dockerutil.Manifest{}, err
 	}
-	return nil
+	return manifest, nil
 }

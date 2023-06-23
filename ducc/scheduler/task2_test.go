@@ -14,13 +14,14 @@ func TestTask2(t *testing.T) {
 
 func MakeACake(task *Task2) {
 	// To bake a cake, we need to:
-	// 1. Preheat the oven
-	// 2. Measure the ingredients
+	// - Preheat the oven
+	// - Measure the ingredients (potentially having to wait for the shared scale)
 	//    2.a Measure the flour
 	//    2.b Measure the sugar
-	// 3. Mix the ingredients
-	// 4. Bake the cake
-	// 5. (Non-critical) Decorate the cake
+	//    2.x Measuse ...
+	// - Mix the ingredients (once they are measured)
+	// - Bake the cake (once the oven is preheated)
+	// - (Non-critical) Decorate the cake (once it is baked)
 
 	preheatOven := NewTask2("Preheat Oven", task.ResourcePool)
 	measureIngredients := NewTask2("Measure Ingredients", task.ResourcePool)
@@ -41,7 +42,6 @@ func MakeACake(task *Task2) {
 	go func() {
 		preheatOven.Start()
 		preheatOvenFunc(200)
-		fmt.Println("Oven malfunction!")
 		preheatOven.Complete(TS_SUCCESS)
 	}()
 

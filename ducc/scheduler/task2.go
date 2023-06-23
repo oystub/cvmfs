@@ -113,7 +113,7 @@ func (t *Task2) Then(successor *Task2, abortOnPredecessorFailure bool, abortPare
 	}
 }
 
-func (t *Task2) Start() {
+func (t *Task2) StartWhenReady() {
 	if t.Parent != nil {
 		t.Parent.Parent.StatusCv.L.Lock()
 		for t.Parent.Parent.Started == false {

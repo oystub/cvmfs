@@ -8,7 +8,7 @@ import (
 
 func TestTask2(t *testing.T) {
 	pool := NewResourcePool()
-	pool.CreateOrGetResource("scale", 3)
+	pool.CreateOrGetResource("scale", 2)
 	MakeACake(NewTask2("Make a cake", pool))
 }
 
@@ -40,41 +40,37 @@ func MakeACake(task *Task2) {
 
 	// Start the task
 	go func() {
-		preheatOven.Start()
-		preheatOvenFunc(200)
+		preheatOven.StartWhenReady()
+		time.Sleep(10 * time.Second)
 		preheatOven.Complete(TS_SUCCESS)
 	}()
 
 	go func() {
 		NewMeasureIngredientsTask(measureIngredients, "flour", "sugar", "eggs")
-		measureIngredients.Start()
+		measureIngredients.StartWhenReady()
 		measureIngredients.Complete(TS_SUCCESS)
 	}()
 
 	go func() {
-		mixIngredients.Start()
+		mixIngredients.StartWhenReady()
+		time.Sleep(3 * time.Second)
 		mixIngredients.Complete(TS_SUCCESS)
 	}()
 
 	go func() {
-		bakeCake.Start()
-		bakeCakeFunc(bakeCake)
+		bakeCake.StartWhenReady()
+		time.Sleep(5 * time.Second)
 		bakeCake.Complete(TS_SUCCESS)
 	}()
 
 	go func() {
-		decorateCake.Start()
-		decorateCakeFunc(decorateCake)
+		decorateCake.StartWhenReady()
+		time.Sleep(2 * time.Second)
 		decorateCake.Complete(TS_FAILED)
 	}()
 
-	task.Start()
+	task.StartWhenReady()
 	task.Complete(TS_SUCCESS)
-}
-
-func preheatOvenFunc(temp int) {
-	fmt.Printf("Preheating oven to %d degrees\n", temp)
-	time.Sleep(5 * time.Second)
 }
 
 func NewMeasureIngredientsTask(task *Task2, ingredients ...string) {
@@ -83,22 +79,9 @@ func NewMeasureIngredientsTask(task *Task2, ingredients ...string) {
 		task.AddChild(ingredientTask, true)
 		go func(t *Task2, ingredient string) {
 			t.ResourcesRequired = append(t.ResourcesRequired, t.ResourcePool.CreateOrGetResource("scale", 1))
-			t.Start()
-			measure(ingredient)
+			t.StartWhenReady()
+			time.Sleep(time.Second)
 			t.Complete(TS_SUCCESS)
 		}(ingredientTask, ingredient)
 	}
-}
-
-func measure(ingredient string) {
-	time.Sleep(time.Second)
-	fmt.Println("Measured", ingredient)
-}
-
-func bakeCakeFunc(task *Task2) {
-	time.Sleep(10 * time.Second)
-}
-
-func decorateCakeFunc(task *Task2) {
-	time.Sleep(time.Second)
 }

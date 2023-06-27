@@ -31,7 +31,7 @@ func NewFetchManifestTask(image lib.Image2, pool *ResourcePool) *Task {
 		1,
 		&FetchManifestAction{ImageId: image.Id},
 		[]*Task{},
-		[]*Resource{pool.CreateOrGetResource(CONTAINER_REPOSITORY_RESOURCE_PREFIX+image.Repository, 20)},
+		[]*Resource{pool.CreateOrGetResource(CONTAINER_REGISTRY_RESOURCE_PREFIX+image.Repository, 20)},
 	)
 }
 
@@ -44,7 +44,7 @@ func UpdateImageFail(image lib.Image, pool *ResourcePool, repo string) error {
 	convertAgain := false
 	///////////
 
-	repositoryResource := pool.CreateOrGetResource(CONTAINER_REPOSITORY_RESOURCE_PREFIX+image.Repository, 20)
+	repositoryResource := pool.CreateOrGetResource(CONTAINER_REGISTRY_RESOURCE_PREFIX+image.Repository, 20)
 	// 1. Fetch manifest
 	fetchManifest := Step{
 		Name:          "Fetch manifest",

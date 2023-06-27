@@ -1,8 +1,14 @@
 package scheduler
 
 import (
+	"bytes"
 	"fmt"
+	"log"
+	"os"
 	"sync"
+
+	"github.com/dominikbraun/graph"
+	"github.com/dominikbraun/graph/draw"
 )
 
 type SuccessorRelationship struct {
@@ -13,170 +19,315 @@ type SuccessorRelationship struct {
 }
 
 type ParentChildRelationship struct {
-	Parent                    *Task2
-	Child                     *Task2
-	AbortParentOnChildFailure bool
+	Parent                   *Task2
+	Child                    *Task2
+	FailParentOnChildFailure bool
 }
 
 type Task2 struct {
-	Name     string
-	StatusCv sync.Cond
-	Status   TaskStatus
-	Done     bool
-	Started  bool
+	Name string
+
+	statusCv   sync.Cond // Guards status, done, started, retries, and maxRetries
+	status     TaskStatus
+	done       bool
+	started    bool
+	retries    int
+	maxRetries int
 
 	// Parent/Child relationships for subtasks
-	ChildrenCv        sync.Cond
-	ChildrenRemaining int
-	Parent            *ParentChildRelationship
-	Children          []*ParentChildRelationship
+	childrenMutex     sync.Mutex // Guards childrenRemaining and children
+	childrenRemaining int
+	children          []*ParentChildRelationship
+	childCompleted    chan *ParentChildRelationship
+	parent            *ParentChildRelationship
 
 	// Predecessor/Successor relationships
-	PredecessorsCv        sync.Cond
-	PredecessorsRemaining int
-	Predecessors          []*SuccessorRelationship
-	Successors            []*SuccessorRelationship
+	predecessorsCv        sync.Cond // Guards predecessorsRemaining, predecessors, and successors
+	predecessorsRemaining int
+	predecessors          []*SuccessorRelationship
+	successors            []*SuccessorRelationship
 
-	ResourcesRequired []*Resource
+	// Resources required by this task
+	// resourcesRequired can only be changed during task creation - no mutex required
+	resourcesRequired []*Resource
 	ResourcePool      *ResourcePool
 
+	// Logging
+	logger    *log.Logger
+	logBuffer *bytes.Buffer
+
 	// Channels for communication between tasks
-	abort chan interface{}
-	done  chan interface{}
+	Interrupt chan TaskStatus
 }
 
-func NewTask2(name string, pool *ResourcePool) *Task2 {
+func NewTask2(name string, pool *ResourcePool, maxRetries int) *Task2 {
+	buffer := bytes.NewBuffer([]byte{})
+
 	return &Task2{
-		Name:     name,
-		StatusCv: sync.Cond{L: &sync.Mutex{}},
-		Status:   TS_CREATED,
-		Done:     false,
-		Started:  false,
+		Name:       name,
+		statusCv:   sync.Cond{L: &sync.Mutex{}},
+		status:     TS_CREATED,
+		done:       false,
+		started:    false,
+		retries:    0,
+		maxRetries: maxRetries,
 
-		ChildrenCv:        sync.Cond{L: &sync.Mutex{}},
-		ChildrenRemaining: 0,
-		Parent:            nil,
-		Children:          []*ParentChildRelationship{},
+		childrenRemaining: 0,
+		parent:            nil,
+		childrenMutex:     sync.Mutex{},
+		children:          []*ParentChildRelationship{},
+		childCompleted:    make(chan *ParentChildRelationship, 1),
 
-		PredecessorsCv:        sync.Cond{L: &sync.Mutex{}},
-		PredecessorsRemaining: 0,
-		Predecessors:          []*SuccessorRelationship{},
-		Successors:            []*SuccessorRelationship{},
+		predecessorsCv:        sync.Cond{L: &sync.Mutex{}},
+		predecessorsRemaining: 0,
+		predecessors:          []*SuccessorRelationship{},
+		successors:            []*SuccessorRelationship{},
 
 		ResourcePool:      pool,
-		ResourcesRequired: []*Resource{},
+		resourcesRequired: []*Resource{},
 
-		abort: make(chan interface{}),
-		done:  make(chan interface{}),
+		logBuffer: buffer,
+		logger:    log.New(buffer, "", log.LstdFlags),
+
+		Interrupt: make(chan TaskStatus, 1),
 	}
 }
 
-func (t *Task2) AddChild(child *Task2, abortParentOnChildFailure bool) {
+func (t *Task2) AddRequiredResources(resources ...*Resource) error {
+	t.statusCv.L.Lock()
+	defer t.statusCv.L.Unlock()
+	if t.status != TS_CREATED {
+		return fmt.Errorf("Cannot add required resources to task that has already started")
+	}
+	t.resourcesRequired = append(t.resourcesRequired, resources...)
+	return nil
+}
+
+func (t *Task2) AddChild(child *Task2, failParentOnChildFailure bool) error {
 	relationship := &ParentChildRelationship{
-		Parent:                    t,
-		Child:                     child,
-		AbortParentOnChildFailure: abortParentOnChildFailure,
+		Parent:                   t,
+		Child:                    child,
+		FailParentOnChildFailure: failParentOnChildFailure,
 	}
-	t.ChildrenCv.L.Lock()
-	t.Children = append(t.Children, relationship)
-	t.ChildrenRemaining++
-	t.ChildrenCv.L.Unlock()
+	t.childrenMutex.Lock()
+	t.statusCv.L.Lock()
+	if t.done {
+		t.statusCv.L.Unlock()
+		t.childrenMutex.Unlock()
+		return fmt.Errorf("Cannot add child to completed task")
+	}
+	t.statusCv.L.Unlock()
 
-	child.ChildrenCv.L.Lock()
-	child.Parent = relationship
-	child.ChildrenCv.L.Unlock()
+	t.children = append(t.children, relationship)
+	t.childrenRemaining++
+	t.childrenMutex.Unlock()
+
+	child.childrenMutex.Lock()
+	child.parent = relationship
+	child.childrenMutex.Unlock()
+
+	return nil
 }
 
-func (t *Task2) AddSuccessor(successor *Task2, abortOnPredecessorFailure bool) {
+func (t *Task2) AddSuccessor(successor *Task2, abortOnPredecessorFailure bool) error {
 	relationship := &SuccessorRelationship{
 		Predecessor:               t,
 		Successor:                 successor,
 		AbortOnPredecessorFailure: abortOnPredecessorFailure,
 	}
 
-	t.PredecessorsCv.L.Lock()
-	t.Successors = append(t.Successors, relationship)
-	t.PredecessorsCv.L.Unlock()
+	t.predecessorsCv.L.Lock()
+	t.statusCv.L.Lock()
+	if t.done {
+		t.statusCv.L.Unlock()
+		t.predecessorsCv.L.Unlock()
+		return fmt.Errorf("Cannot add successor to completed task")
+	}
+	t.statusCv.L.Unlock()
 
-	successor.PredecessorsCv.L.Lock()
-	successor.Predecessors = append(successor.Predecessors, relationship)
-	successor.PredecessorsRemaining++
-	successor.PredecessorsCv.L.Unlock()
+	t.successors = append(t.successors, relationship)
+	t.predecessorsCv.L.Unlock()
+
+	successor.predecessorsCv.L.Lock()
+	successor.predecessors = append(successor.predecessors, relationship)
+	successor.predecessorsRemaining++
+	successor.predecessorsCv.L.Unlock()
+
+	return nil
 }
 
-func (t *Task2) Then(successor *Task2, abortOnPredecessorFailure bool, abortParentOnChildFailure bool) {
+// Convenience function for adding a successor and sibling relationship at the same time
+func (t *Task2) Then(successor *Task2, abortOnPredecessorFailure bool, failParentOnChildFailure bool) {
 	t.AddSuccessor(successor, abortOnPredecessorFailure)
-
 	// If t is the child of another task, the successor should also be a child of that task
-	if t.Parent != nil {
-		t.Parent.Parent.AddChild(successor, abortParentOnChildFailure)
+	if t.parent != nil {
+		t.parent.Parent.AddChild(successor, failParentOnChildFailure)
 	}
 }
 
 func (t *Task2) StartWhenReady() {
-	if t.Parent != nil {
-		t.Parent.Parent.StatusCv.L.Lock()
-		for t.Parent.Parent.Started == false {
-			t.Parent.Parent.StatusCv.Wait()
+	t.logger.Println("[DEBUG] StartWhenReady called")
+	t.statusCv.L.Lock()
+	t.status = TS_WAITING
+	t.statusCv.L.Unlock()
+
+	if t.parent != nil {
+		t.parent.Parent.statusCv.L.Lock()
+		for t.parent.Parent.started == false {
+			t.logger.Printf("[DEBUG] Waiting for parent task %s to start\n", t.parent.Parent.Name)
+			t.parent.Parent.statusCv.Wait()
 		}
-		t.Parent.Parent.StatusCv.L.Unlock()
+		t.parent.Parent.statusCv.L.Unlock()
 	}
 
-	t.PredecessorsCv.L.Lock()
-	for t.PredecessorsRemaining > 0 {
-		t.PredecessorsCv.Wait()
+	t.predecessorsCv.L.Lock()
+	for t.predecessorsRemaining > 0 {
+		t.logger.Printf("[DEBUG] Waiting for %d predecessors to complete\n", t.predecessorsRemaining)
+		t.predecessorsCv.Wait()
 	}
-	t.PredecessorsCv.L.Unlock()
+	t.predecessorsCv.L.Unlock()
 
 	// Acquire all required resources
-	AcquireMultiple(t.ResourcesRequired)
+	if len(t.resourcesRequired) > 0 {
+		t.logger.Printf("[DEBUG] Acquiring resources")
+		AcquireMultiple(t.resourcesRequired)
+		t.logger.Println("[DEBUG] Resources acquired")
+	}
 
-	t.StatusCv.L.Lock()
-	t.Started = true
-	t.Status = TS_RUNNING
-	fmt.Printf("Task %s started\n", t.Name)
-	t.StatusCv.Broadcast()
-	t.StatusCv.L.Unlock()
+	t.statusCv.L.Lock()
+	t.started = true
+	t.status = TS_RUNNING
+	t.logger.Println("[INFO] Task started")
+	t.statusCv.Broadcast()
+	t.statusCv.L.Unlock()
 }
 
-func (t *Task2) Complete(status TaskStatus) {
-	// Wait for children to complete
-	t.ChildrenCv.L.Lock()
-	if t.ChildrenRemaining > 0 {
-		for t.ChildrenRemaining > 0 {
-			t.ChildrenCv.Wait()
+func (t *Task2) CompleteWhenReady(status TaskStatus) {
+	t.logger.Printf("[DEBUG] CompleteWhenReady called with status %s\n", status.String())
+	t.childrenMutex.Lock()
+	if t.childrenRemaining > 0 {
+		t.childrenMutex.Unlock()
+		t.logger.Printf("[DEBUG] Waiting for %d child task(s) to complete\n", t.childrenRemaining)
+	WaitForChildren:
+		for {
+			select {
+			case relationship := <-t.childCompleted:
+				t.childrenMutex.Lock()
+				t.childrenRemaining--
+				relationship.Child.statusCv.L.Lock()
+				childStatus := relationship.Child.status
+				relationship.Child.statusCv.L.Unlock()
+				t.logger.Printf("[DEBUG] Child task %s completed with status %s\n", relationship.Child.Name, childStatus.String())
+				// If a required child failed, this task should fail as well
+				if relationship.FailParentOnChildFailure && childStatus != TS_SUCCESS {
+					status = TS_FAILED
+					// Abort all other child tasks
+					t.logger.Printf("[ERROR] Required child task %s completed with status %s. Aborting other child tasks\n", relationship.Child.Name, childStatus.String())
+					for _, child := range t.children {
+						select {
+						case child.Child.Interrupt <- TS_ABORTED:
+							break
+						default:
+							break
+						}
+					}
+				}
+				if t.childrenRemaining == 0 {
+					// Retain the children lock until the status is updated
+					t.logger.Println("[DEBUG] All child tasks completed")
+					break WaitForChildren
+				}
+				t.childrenMutex.Unlock()
+				break
+			case status := <-t.Interrupt:
+				t.logger.Printf("[DEBUG] Interrupted with status flag %s\n. Forwarding interrupt to all child tasks", status.String())
+				// Interrupt all child tasks
+				for _, child := range t.children {
+					select {
+					case child.Child.Interrupt <- status:
+						break
+					default:
+						break
+					}
+				}
+				break
+			}
 		}
 	}
-	t.ChildrenCv.L.Unlock()
 
 	// Release all resources
-	ReleaseMultiple(t.ResourcesRequired)
-
-	// Update the status
-	t.StatusCv.L.Lock()
-	t.Status = status
-	t.Done = true
-	t.StatusCv.Broadcast()
-	t.StatusCv.L.Unlock()
+	if len(t.resourcesRequired) > 0 {
+		t.logger.Println("[DEBUG] Releasing resources")
+		ReleaseMultiple(t.resourcesRequired)
+	}
+	// Update the task status
+	t.statusCv.L.Lock()
+	t.status = status
+	t.done = true
+	t.statusCv.Broadcast()
+	t.statusCv.L.Unlock()
+	t.childrenMutex.Unlock()
 
 	// Notify parent that this task is done
-	if t.Parent != nil {
-		t.Parent.Parent.ChildrenCv.L.Lock()
-		t.Parent.Parent.ChildrenRemaining--
-		t.Parent.Parent.ChildrenCv.Broadcast()
-		t.Parent.Parent.ChildrenCv.L.Unlock()
+	if t.parent != nil {
+		t.parent.Parent.childCompleted <- t.parent
 	}
 
 	// Notify successors that this task is done
-	t.PredecessorsCv.L.Lock()
-	for _, successor := range t.Successors {
-		successor.Successor.PredecessorsCv.L.Lock()
-		successor.Successor.PredecessorsRemaining--
-		successor.Successor.PredecessorsCv.Broadcast()
-		successor.Successor.PredecessorsCv.L.Unlock()
+	t.predecessorsCv.L.Lock()
+	for _, successor := range t.successors {
+		successor.Successor.predecessorsCv.L.Lock()
+		successor.Successor.predecessorsRemaining--
+		successor.Successor.predecessorsCv.Broadcast()
+		successor.Successor.predecessorsCv.L.Unlock()
 	}
-	t.PredecessorsCv.L.Unlock()
+	t.predecessorsCv.L.Unlock()
 
-	fmt.Printf("Task %s completed with status %s\n", t.Name, status.String())
+	t.logger.Printf("[INFO] Task completed with status %s\n", status.String())
+}
 
+func (t *Task2) Retry() bool {
+	t.statusCv.L.Lock()
+	defer t.statusCv.L.Unlock()
+	if t.retries < t.maxRetries {
+		t.logger.Printf("[DEBUG] Retrying task. Retry %d of %d\n", t.retries+1, t.maxRetries)
+		t.retries++
+		return true
+	}
+	t.logger.Printf("[DEBUG] Not retrying task. Tried %d time(s), and max retries is %d\n", t.retries+1, t.maxRetries)
+	return false
+}
+
+func VisualizeTaskGraph(task *Task2) {
+	g := graph.New(taskNameHash, graph.Directed())
+	addAllSuccessorsAndChildren(g, task, true)
+	file, _ := os.Create("/root/my-graph.gv")
+	_ = draw.DOT(g, file)
+
+}
+
+func addAllSuccessorsAndChildren(g graph.Graph[string, *Task2], task *Task2, root bool) {
+	var bgColor string
+	if task.status == TS_SUCCESS {
+		bgColor = "green"
+	} else if task.status == TS_FAILED {
+		bgColor = "red"
+	} else if task.status == TS_ABORTED {
+		bgColor = "gray"
+	} else {
+		bgColor = "white"
+	}
+	g.AddVertex(task, graph.VertexAttribute("label", task.Name+"\n"+task.status.String()), graph.VertexAttribute("fillcolor", bgColor), graph.VertexAttribute("style", "filled"), graph.VertexAttribute("shape", "box"))
+	for _, successor := range task.successors {
+		addAllSuccessorsAndChildren(g, successor.Successor, false)
+		g.AddEdge(task.Name, successor.Successor.Name, graph.EdgeAttribute("color", "black"), graph.EdgeAttribute("weight", "2"))
+	}
+	for _, child := range task.children {
+		addAllSuccessorsAndChildren(g, child.Child, false)
+		g.AddEdge(task.Name, child.Child.Name, graph.EdgeAttribute("color", "blue"), graph.EdgeAttribute("style", "dashed"), graph.EdgeAttribute("weight", "4"))
+	}
+}
+
+func taskNameHash(task *Task2) string {
+	return task.Name
 }

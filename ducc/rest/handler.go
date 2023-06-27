@@ -75,7 +75,7 @@ func RunRawRestApi() {
 		NewRoute("GET", "/wishes/([0-9]+)", getWishHandler),
 		NewRoute("DELETE", "/wishes/([0-9]+)", notImplementedHandler),
 		NewRoute("POST", "/wishes/([0-9]+)/sync", notImplementedHandler),
-		NewRoute("PUT", "/wishes/([0-9]+)/image", notImplementedHandler),
+		NewRoute("GET", "/wishes/([0-9]+)/images", notImplementedHandler),
 		NewRoute("GET", "/wishes/([0-9]+)/jobs", notImplementedHandler),
 
 		// Images
@@ -83,6 +83,7 @@ func RunRawRestApi() {
 		NewRoute("GET", "/images/([0-9]+)", notImplementedHandler),
 		NewRoute("POST", "/images/([0-9]+)/delete", notImplementedHandler),
 		NewRoute("POST", "/images/([0-9]+)/sync", notImplementedHandler),
+		NewRoute("GET", "/images/([0-9]+)/jobs", notImplementedHandler),
 
 		// Layers
 		// Not sure if we need this

@@ -175,7 +175,7 @@ func (img *Image) PrintImage(machineFriendly, csv_header bool) {
 	}
 }
 
-func (img *Image) fetchManifest() (*da.Manifest, error) {
+func (img *Image) FetchManifest() (*da.Manifest, error) {
 	bytes, err := img.getByteManifest("")
 	if err != nil {
 		return nil, err
@@ -193,7 +193,7 @@ func (img *Image) fetchManifest() (*da.Manifest, error) {
 	return &manifest, nil
 }
 
-func (img *Image) fetchManifestList() (*da.Manifest, error) {
+func (img *Image) FetchManifestList() (*da.Manifest, error) {
 	bytes1, err := img.getByteManifestList()
 	if err != nil {
 		return nil, err
@@ -245,10 +245,10 @@ func (img *Image) GetManifest() (da.Manifest, error) {
 	}
 
 	// First try to fetch a simple manifest
-	manifest, err := img.fetchManifest()
+	manifest, err := img.FetchManifest()
 	if err != nil || manifest.MediaType == "application/vnd.docker.distribution.manifest.list.v2+json" || manifest.MediaType == "application/vnd.oci.image.index.v1+json" {
 		// If the first fetch fails, try to fetch from a manifest list
-		manifest, err := img.fetchManifestList()
+		manifest, err := img.FetchManifestList()
 		if err != nil {
 			return da.Manifest{}, fmt.Errorf("could not retrieve manifest for %s", img.WholeName())
 		}

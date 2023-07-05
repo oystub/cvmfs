@@ -97,7 +97,7 @@ func (t *Task2) AddRequiredResources(resources ...*Resource) error {
 	t.statusCv.L.Lock()
 	defer t.statusCv.L.Unlock()
 	if t.status != TS_CREATED {
-		return fmt.Errorf("Cannot add required resources to task that has already started")
+		return fmt.Errorf("cannot add required resources to task that has already started")
 	}
 	t.resourcesRequired = append(t.resourcesRequired, resources...)
 	return nil
@@ -114,7 +114,7 @@ func (t *Task2) AddChild(child *Task2, failParentOnChildFailure bool) error {
 	if t.done {
 		t.statusCv.L.Unlock()
 		t.childrenMutex.Unlock()
-		return fmt.Errorf("Cannot add child to completed task")
+		return fmt.Errorf("cannot add child to completed task")
 	}
 	t.statusCv.L.Unlock()
 
@@ -141,7 +141,7 @@ func (t *Task2) AddSuccessor(successor *Task2, abortOnPredecessorFailure bool) e
 	if t.done {
 		t.statusCv.L.Unlock()
 		t.predecessorsCv.L.Unlock()
-		return fmt.Errorf("Cannot add successor to completed task")
+		return fmt.Errorf("cannot add successor to completed task")
 	}
 	t.statusCv.L.Unlock()
 
@@ -173,7 +173,7 @@ func (t *Task2) StartWhenReady() {
 
 	if t.parent != nil {
 		t.parent.Parent.statusCv.L.Lock()
-		for t.parent.Parent.started == false {
+		for !t.parent.Parent.started {
 			t.logger.Printf("[DEBUG] Waiting for parent task %s to start\n", t.parent.Parent.Name)
 			t.parent.Parent.statusCv.Wait()
 		}
@@ -226,9 +226,7 @@ func (t *Task2) CompleteWhenReady(status TaskStatus) {
 					for _, child := range t.children {
 						select {
 						case child.Child.Interrupt <- TS_ABORTED:
-							break
 						default:
-							break
 						}
 					}
 				}
@@ -238,19 +236,15 @@ func (t *Task2) CompleteWhenReady(status TaskStatus) {
 					break WaitForChildren
 				}
 				t.childrenMutex.Unlock()
-				break
 			case status := <-t.Interrupt:
 				t.logger.Printf("[DEBUG] Interrupted with status flag %s\n. Forwarding interrupt to all child tasks", status.String())
 				// Interrupt all child tasks
 				for _, child := range t.children {
 					select {
 					case child.Child.Interrupt <- status:
-						break
 					default:
-						break
 					}
 				}
-				break
 			}
 		}
 	}
@@ -289,8 +283,25 @@ func (t *Task2) CompleteWhenReady(status TaskStatus) {
 func (t *Task2) Retry() bool {
 	t.statusCv.L.Lock()
 	defer t.statusCv.L.Unlock()
+
+	if t.done {
+		t.logger.Printf("[DEBUG] Not retrying task. Task is already done\n")
+		return false
+	}
+
 	if t.retries < t.maxRetries {
 		t.logger.Printf("[DEBUG] Retrying task. Retry %d of %d\n", t.retries+1, t.maxRetries)
+		if len(t.resourcesRequired) > 0 {
+			t.childrenMutex.Lock()
+			childrenRemaining := t.childrenRemaining
+			t.childrenMutex.Unlock()
+			if childrenRemaining > 0 {
+				t.logger.Printf("[WARN] Releasing and re-acquiring resources while %d child task(s) are still remaining\n", childrenRemaining)
+			}
+			t.logger.Printf("[DEBUG] Releasing and re-acquiring resources")
+			ReleaseMultiple(t.resourcesRequired)
+			AcquireMultiple(t.resourcesRequired)
+		}
 		t.retries++
 		return true
 	}

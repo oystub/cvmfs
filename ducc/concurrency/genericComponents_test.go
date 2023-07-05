@@ -1,22 +1,26 @@
 package concurrency
 
 import (
+	"fmt"
 	"math/rand"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
 )
 
 func TestSync(t *testing.T) {
-	in1 := make(chan TaggedValueWithCtx[int])
-	in2 := make(chan TaggedValueWithCtx[int])
-	in3 := make(chan TaggedValueWithCtx[int])
-
+	Idcounter = 0
+	in1 := NewRefCountedChan[TaggedValueWithCtx[int]]()
+	in2 := NewRefCountedChan[TaggedValueWithCtx[int]]()
+	in3 := NewRefCountedChan[TaggedValueWithCtx[int]]()
 	syncer := NewSync[int](3)
 
 	Connect(in1, syncer.In[0])
 	Connect(in2, syncer.In[1])
 	Connect(in3, syncer.In[2])
+
+	fmt.Println("Connected all channels")
 
 	seqLength := 10
 	seq := make([]TaggedValueWithCtx[int], seqLength)
@@ -40,30 +44,70 @@ func TestSync(t *testing.T) {
 	})
 
 	go syncer.Process()
-	inputFunc := func(c chan TaggedValueWithCtx[int], s []TaggedValueWithCtx[int]) {
-		defer close(c)
+	inputFunc := func(c RefCountedChan[TaggedValueWithCtx[int]], s []TaggedValueWithCtx[int]) {
+		defer c.Close()
+		fmt.Printf("Sending values to channel %d\n", c.id)
 		for _, val := range s {
-			c <- val
+			c.ch <- val
 		}
+		fmt.Printf("Sent all values to channel %d\n", c.id)
 	}
 	go inputFunc(in1, seq)
 	go inputFunc(in2, seq2)
 	go inputFunc(in3, seq3)
 
+	count := 0
 	for {
-		val1, ok1 := <-syncer.Out[0]
-		val2, ok2 := <-syncer.Out[1]
-		val3, ok3 := <-syncer.Out[2]
+		val1, ok1 := <-syncer.Out[0].ch
+		val2, ok2 := <-syncer.Out[1].ch
+		val3, ok3 := <-syncer.Out[2].ch
 
+		// Channel closed
 		if !ok1 {
-			if !ok2 && !ok3 {
-				return
-			} else {
+			if ok2 || ok3 {
 				t.Errorf("Not all channels closed simultaneously")
+				return
 			}
+			break
 		}
 		if val1.TagStack[0] != val2.TagStack[0] || val1.TagStack[0] != val3.TagStack[0] {
 			t.Errorf("Tags do not match")
 		}
+		count++
 	}
+	if count != seqLength {
+		t.Errorf(fmt.Sprintf("Not all channels closed simultaneously, count = %d", count))
+		return
+	}
+}
+
+func TestY(t *testing.T) {
+	a := NewRefCountedChan[string]()
+	b := NewRefCountedChan[string]()
+	c := NewRefCountedChan[string]()
+
+	Connect(a, c)
+	Connect(b, c)
+
+	wg := sync.WaitGroup{}
+	wg.Add(3)
+
+	go func() {
+		defer wg.Done()
+		defer a.Close()
+		a.ch <- "a"
+	}()
+	go func() {
+		for v := range c.ch {
+			fmt.Println(v)
+		}
+		wg.Done()
+	}()
+	go func() {
+		defer wg.Done()
+		defer b.Close()
+		b.ch <- "b"
+	}()
+	wg.Wait()
+
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
+	"time"
 
 	dockerutil "github.com/cvmfs/ducc/docker-api"
 	"github.com/cvmfs/ducc/lib"
@@ -12,40 +13,41 @@ import (
 )
 
 type UpdateImage struct {
-	In        chan TaggedValueWithCtx[lib.Image]
-	Out       chan TaggedValueWithCtx[interface{}]
+	In        RefCountedChan[TaggedValueWithCtx[lib.Image]]
+	Out       RefCountedChan[TaggedValueWithCtx[interface{}]]
 	cvmfsRepo string
 }
 
 func NewUpdateImage(cvmfsRepo string) UpdateImage {
 	return UpdateImage{
-		In:        make(chan TaggedValueWithCtx[lib.Image]),
-		Out:       make(chan TaggedValueWithCtx[interface{}]),
+		In:        NewRefCountedChan[TaggedValueWithCtx[lib.Image]](),
+		Out:       NewRefCountedChan[TaggedValueWithCtx[interface{}]](),
 		cvmfsRepo: cvmfsRepo,
 	}
 }
 
 func (component UpdateImage) Process() {
-	defer close(component.Out)
 	tempdir := "/tmp"
 
 	////// Fetch the current remote manifest
 	fetchManifest := NewFetchManifest()
-	Connect(component.In, fetchManifest.in, "Input->FetchManifest")
+	Connect(component.In, fetchManifest.In)
 	imageInCvmfs := NewImageInCvmfs(component.cvmfsRepo)
-	Connect(fetchManifest.out, imageInCvmfs.In, "FetchManifest->ImageInCvmfs")
+	Connect(fetchManifest.Out, imageInCvmfs.In)
 
 	////// Download the layers that are not in CVMFS
 	downloadLayers := NewDownloadLayers(tempdir)
-	Connect(imageInCvmfs.OutNotInCvmfs, downloadLayers.In, "ImageInCvmfs->DownloadLayers")
+	Connect(imageInCvmfs.OutNotInCvmfs, downloadLayers.In)
 
 	////// Perform additional operations on the images, both the ones in CVMFS and the ones that were downloaded
 	broadcastToAdditionalOperations := NewBroadcast[lib.Image](1)
-	Connect(imageInCvmfs.OutInCvmfs, broadcastToAdditionalOperations.In, "ImageInCvmfs->BroadcastToAdditionalOperations")
-	Connect(downloadLayers.Out, broadcastToAdditionalOperations.In, "DownloadLayers->BroadcastToAdditionalOperations")
+	Connect(imageInCvmfs.OutInCvmfs, broadcastToAdditionalOperations.In)
+	Connect(downloadLayers.Out, broadcastToAdditionalOperations.In)
 
 	createLayer := NewCreateLayers()
 	ConnectWithTypeAssert(broadcastToAdditionalOperations.Out[0], createLayer.In)
+
+	ConnectWithTypeAssert(createLayer.Out, component.Out)
 
 	wg := sync.WaitGroup{}
 
@@ -57,39 +59,38 @@ func (component UpdateImage) Process() {
 	go func() { createLayer.Process(); wg.Done() }()
 
 	wg.Wait()
-	fmt.Println("UpdateImage done")
+	fmt.Printf("UpdateImage shutting down\n")
 }
 
 type DownloadLayers struct {
-	In      chan TaggedValueWithCtx[lib.Image]
-	Out     chan TaggedValueWithCtx[lib.Image]
+	In      RefCountedChan[TaggedValueWithCtx[lib.Image]]
+	Out     RefCountedChan[TaggedValueWithCtx[lib.Image]]
 	tempdir string
 }
 
 func NewDownloadLayers(tempdir string) DownloadLayers {
 	return DownloadLayers{
-		In:      make(chan TaggedValueWithCtx[lib.Image]),
-		Out:     make(chan TaggedValueWithCtx[lib.Image]),
+		In:      NewRefCountedChan[TaggedValueWithCtx[lib.Image]](),
+		Out:     NewRefCountedChan[TaggedValueWithCtx[lib.Image]](),
 		tempdir: tempdir,
 	}
 }
 
 func (d DownloadLayers) Process() {
-	defer close(d.Out)
 	broadcastImage := NewBroadcast[lib.Image](2) // out[1] will be sent to the next component when all layers are downloaded
-	Connect(d.In, broadcastImage.In, "Input->BroadcastImage")
+	Connect(d.In, broadcastImage.In)
 
 	scatterIntoLayers := NewScatterIntoLayers(1)
-	Connect(broadcastImage.Out[0], scatterIntoLayers.In, "BroadcastImage->ScatterIntoLayers")
+	Connect(broadcastImage.Out[0], scatterIntoLayers.In)
 
 	alreadyInCvmfs := NewLayerAlreadyInCvmfs()
 	ConnectWithTypeAssert(scatterIntoLayers.Out[0], alreadyInCvmfs.In)
 
 	downloadLayer := NewDownloadLayer(d.tempdir)
-	Connect(alreadyInCvmfs.OutNotInCvmfs, downloadLayer.In, "LayerAlreadyInCvmfs->DownloadLayer")
+	Connect(alreadyInCvmfs.OutNotInCvmfs, downloadLayer.In)
 
 	convertLayer := NewConvertLayer(d.tempdir)
-	Connect(downloadLayer.OutLayer, convertLayer.In, "DownloadLayer->ConvertLayer")
+	Connect(downloadLayer.OutLayer, convertLayer.In)
 
 	gatherLayers := NewGather[dockerutil.Layer]()
 	ConnectWithTypeAssert(convertLayer.Out, gatherLayers.In)
@@ -116,95 +117,101 @@ func (d DownloadLayers) Process() {
 	go func() { layerSink.Process(); wg.Done() }()
 
 	wg.Wait()
-	fmt.Println("DownloadLayers done")
 }
 
 type FetchManifest struct {
-	in  chan TaggedValueWithCtx[lib.Image]
-	out chan TaggedValueWithCtx[lib.Image]
+	In  RefCountedChan[TaggedValueWithCtx[lib.Image]]
+	Out RefCountedChan[TaggedValueWithCtx[lib.Image]]
 }
 
 func NewFetchManifest() FetchManifest {
 	return FetchManifest{
-		in:  make(chan TaggedValueWithCtx[lib.Image]),
-		out: make(chan TaggedValueWithCtx[lib.Image]),
+		In:  NewRefCountedChan[TaggedValueWithCtx[lib.Image]](),
+		Out: NewRefCountedChan[TaggedValueWithCtx[lib.Image]](),
 	}
 }
 
 func (f FetchManifest) Process() {
-	defer close(f.out)
-	for input := range f.in {
+	defer f.Out.Close()
+	for input := range f.In.ch {
+		logger := input.Ctx.Value("logger").(*LoggerWithBuffer).GetLogger()
+
 		img := input.Value
 
-		fmt.Printf("Fetching manifest for %s\n", img.GetSimpleName())
+		logger.Printf("[INFO] Attempting to fetch manifest for image %s\n", img.GetSimpleName())
+		manifest, err := img.GetManifest()
+		if err != nil {
+			logger.Printf("[ERROR] Failed to fetch manifest for image %s\n", img.GetSimpleName())
+			continue
+		}
+		logger.Printf("[INFO] Successfully fetched manifest for image %s\n", img.GetSimpleName())
 
-		manifest, _ := img.GetManifest()
 		input.Value.Manifest = &manifest
-
-		fmt.Printf("Got manifest for %s: %v\n", img.GetSimpleName(), manifest)
-
-		f.out <- input
+		f.Out.ch <- input
 	}
-	fmt.Println("FetchManifest done")
 }
 
 type LayerAlreadyInCvmfs struct {
-	In            chan TaggedValueWithCtx[dockerutil.Layer]
-	OutNotInCvmfs chan TaggedValueWithCtx[dockerutil.Layer]
-	OutInCvmfs    chan TaggedValueWithCtx[dockerutil.Layer]
+	In            RefCountedChan[TaggedValueWithCtx[dockerutil.Layer]]
+	OutNotInCvmfs RefCountedChan[TaggedValueWithCtx[dockerutil.Layer]]
+	OutInCvmfs    RefCountedChan[TaggedValueWithCtx[dockerutil.Layer]]
 	cvmfsRepo     string
 }
 
 func NewLayerAlreadyInCvmfs() LayerAlreadyInCvmfs {
 	return LayerAlreadyInCvmfs{
-		In:            make(chan TaggedValueWithCtx[dockerutil.Layer]),
-		OutNotInCvmfs: make(chan TaggedValueWithCtx[dockerutil.Layer]),
-		OutInCvmfs:    make(chan TaggedValueWithCtx[dockerutil.Layer]),
+		In:            NewRefCountedChan[TaggedValueWithCtx[dockerutil.Layer]](),
+		OutNotInCvmfs: NewRefCountedChan[TaggedValueWithCtx[dockerutil.Layer]](),
+		OutInCvmfs:    NewRefCountedChan[TaggedValueWithCtx[dockerutil.Layer]](),
 	}
 }
 
 func (a LayerAlreadyInCvmfs) Process() {
-	defer close(a.OutNotInCvmfs)
-	defer close(a.OutInCvmfs)
-	for input := range a.In {
+	defer a.OutNotInCvmfs.Close()
+	defer a.OutInCvmfs.Close()
+	for input := range a.In.ch {
+		logger := input.Ctx.Value("logger").(*LoggerWithBuffer).GetLogger()
+
+		logger.Printf("[INFO] Layer %s (%d/%d) is not present in CVMFS\n", input.Value.Digest, input.TagStack[0].seqNum, input.TagStack[0].count)
 		// TODO: Check if the layer is already in CVMFS
-		a.OutNotInCvmfs <- input
+		a.OutNotInCvmfs.ch <- input
 	}
 }
 
 type ScatterIntoLayers struct {
-	In  chan TaggedValueWithCtx[lib.Image]
-	Out []chan TaggedValueWithCtx[dockerutil.Layer]
+	In  RefCountedChan[TaggedValueWithCtx[lib.Image]]
+	Out []RefCountedChan[TaggedValueWithCtx[dockerutil.Layer]]
 }
 
 func NewScatterIntoLayers(numOutputs int) ScatterIntoLayers {
-	out := make([]chan TaggedValueWithCtx[dockerutil.Layer], numOutputs)
+	out := make([]RefCountedChan[TaggedValueWithCtx[dockerutil.Layer]], numOutputs)
 	for i := range out {
-		out[i] = make(chan TaggedValueWithCtx[dockerutil.Layer])
+		out[i] = NewRefCountedChan[TaggedValueWithCtx[dockerutil.Layer]]()
 	}
 	return ScatterIntoLayers{
-		In:  make(chan TaggedValueWithCtx[lib.Image]),
+		In:  NewRefCountedChan[TaggedValueWithCtx[lib.Image]](),
 		Out: out,
 	}
 }
 
 func (s ScatterIntoLayers) Process() {
-
-	fmt.Println("Begin ScatterIntoLayers")
 	toSend := make(chan TaggedValueWithCtx[dockerutil.Layer])
-	defer close(toSend)
+
+	wg := sync.WaitGroup{}
 
 	for _, outChan := range s.Out {
-		go func(outChan chan TaggedValueWithCtx[dockerutil.Layer]) {
-			defer close(outChan)
+		wg.Add(1)
+		go func(outChan *RefCountedChan[TaggedValueWithCtx[dockerutil.Layer]]) {
+			defer outChan.Close()
 			for input := range toSend {
-				outChan <- input
+				outChan.ch <- input
 			}
-		}(outChan)
+			wg.Done()
+		}(&outChan)
 	}
 
-	for input := range s.In {
-		fmt.Printf("Scattering image %s into layers\n", input.Value.GetSimpleName())
+	for input := range s.In.ch {
+		logger := input.Ctx.Value("logger").(*LoggerWithBuffer).GetLogger()
 		manifest := input.Value.Manifest
 		newTagStack := append([]Tag{{
 			id:     uuid.New(),
@@ -212,6 +219,7 @@ func (s ScatterIntoLayers) Process() {
 			count:  len(manifest.Layers),
 		}}, input.TagStack...)
 
+		logger.Printf("[INFO] Proccessing download and conversion individually for the %d layer(s) of image %s\n", len(manifest.Layers), input.Value.GetSimpleName())
 		for i, layer := range manifest.Layers {
 			copiedTagStack := make([]Tag, len(newTagStack))
 			copy(copiedTagStack, newTagStack)
@@ -226,120 +234,144 @@ func (s ScatterIntoLayers) Process() {
 
 		}
 	}
+	close(toSend)
+	wg.Wait()
 }
 
 type DownloadLayer struct {
-	In           chan TaggedValueWithCtx[dockerutil.Layer]
-	OutLayer     chan TaggedValueWithCtx[dockerutil.Layer]
-	OutTempFiles chan TaggedValueWithCtx[[]string]
+	In           RefCountedChan[TaggedValueWithCtx[dockerutil.Layer]]
+	OutLayer     RefCountedChan[TaggedValueWithCtx[dockerutil.Layer]]
+	OutTempFiles RefCountedChan[TaggedValueWithCtx[[]string]]
 	tempdir      string
 }
 
 func NewDownloadLayer(tempdir string) DownloadLayer {
 	return DownloadLayer{
-		In:           make(chan TaggedValueWithCtx[dockerutil.Layer]),
-		OutLayer:     make(chan TaggedValueWithCtx[dockerutil.Layer]),
-		OutTempFiles: make(chan TaggedValueWithCtx[[]string]),
+		In:           NewRefCountedChan[TaggedValueWithCtx[dockerutil.Layer]](),
+		OutLayer:     NewRefCountedChan[TaggedValueWithCtx[dockerutil.Layer]](),
+		OutTempFiles: NewRefCountedChan[TaggedValueWithCtx[[]string]](),
 		tempdir:      tempdir,
 	}
 }
 
 func (d DownloadLayer) Process() {
+	defer d.OutLayer.Close()
+	defer d.OutTempFiles.Close()
 	// TODO: Download the layer to a temporary directory
-	for input := range d.In {
-		fmt.Printf("Downloading layer %s, which is fragment (%d/%d)\n", input.Value.Digest, input.TagStack[0].seqNum, input.TagStack[0].count)
-		d.OutLayer <- input
+	for input := range d.In.ch {
+		logger := input.Ctx.Value("logger").(*LoggerWithBuffer).GetLogger()
+		logger.Printf("[INFO] Downloading layer %s, (%d/%d)\n", input.Value.Digest, input.TagStack[0].seqNum, input.TagStack[0].count)
+		time.Sleep(10 * time.Millisecond)
+		logger.Printf("[INFO] Successfully downloaded layer %s, (%d/%d)\n", input.Value.Digest, input.TagStack[0].seqNum, input.TagStack[0].count)
+		d.OutLayer.ch <- input
 	}
 	// Append the path to the downloaded layer to the output
 	// This is for later cleanup purposes
 }
 
 type ConvertLayer struct {
-	In      chan TaggedValueWithCtx[dockerutil.Layer]
-	Out     chan TaggedValueWithCtx[dockerutil.Layer]
+	In      RefCountedChan[TaggedValueWithCtx[dockerutil.Layer]]
+	Out     RefCountedChan[TaggedValueWithCtx[dockerutil.Layer]]
 	tempdir string
 }
 
 func NewConvertLayer(tempdir string) ConvertLayer {
 	return ConvertLayer{
-		In:      make(chan TaggedValueWithCtx[dockerutil.Layer]),
-		Out:     make(chan TaggedValueWithCtx[dockerutil.Layer]),
+		In:      NewRefCountedChan[TaggedValueWithCtx[dockerutil.Layer]](),
+		Out:     NewRefCountedChan[TaggedValueWithCtx[dockerutil.Layer]](),
 		tempdir: tempdir,
 	}
 }
 
 func (c ConvertLayer) Process() {
+	defer c.Out.Close()
+
 	// TODO: Conver the layer to cvmfs format
 
-	for input := range c.In {
-		fmt.Printf("Converting layer %s, which is fragment (%d/%d)\n", input.Value.Digest, input.TagStack[0].seqNum, input.TagStack[0].count)
-		c.Out <- input
+	for input := range c.In.ch {
+		logger := input.Ctx.Value("logger").(*LoggerWithBuffer).GetLogger()
+		logger.Printf("[INFO] Converting layer %s (%d/%d)\n", input.Value.Digest, input.TagStack[0].seqNum, input.TagStack[0].count)
+		time.Sleep(10 * time.Millisecond)
+		logger.Printf("[INFO] Successfully converted layer %s (%d/%d)\n", input.Value.Digest, input.TagStack[0].seqNum, input.TagStack[0].count)
+		c.Out.ch <- input
 	}
 }
 
 type CreateLayers struct {
-	In  chan TaggedValueWithCtx[lib.Image]
-	Out chan any
+	In  RefCountedChan[TaggedValueWithCtx[lib.Image]]
+	Out RefCountedChan[TaggedValueWithCtx[any]]
 }
 
 func NewCreateLayers() CreateLayers {
 	return CreateLayers{
-		In:  make(chan TaggedValueWithCtx[lib.Image]),
-		Out: make(chan any),
+		In:  NewRefCountedChan[TaggedValueWithCtx[lib.Image]](),
+		Out: NewRefCountedChan[TaggedValueWithCtx[any]](),
 	}
 }
 
 func (c CreateLayers) Process() {
-	defer close(c.Out)
-	for input := range c.In {
-		fmt.Printf("Creating layers for %s\n", input.Value.GetSimpleName())
-		c.Out <- any(input)
+	defer c.Out.Close()
+	for input := range c.In.ch {
+		logger := input.Ctx.Value("logger").(*LoggerWithBuffer).GetLogger()
+		logger.Printf("[INFO] Creating layers for %s\n", input.Value.GetSimpleName())
+		// Copy the tag stack from the input
+		newTagStack := make([]Tag, len(input.TagStack))
+		copy(newTagStack, input.TagStack)
+		logger.Printf("[INFO] Successfully created layers for %s\n", input.Value.GetSimpleName())
+		c.Out.ch <- TaggedValueWithCtx[any]{
+			TagStack: newTagStack,
+			Ctx:      input.Ctx,
+			Value:    1,
+		}
 	}
 }
 
 type AcquireResource[T any] struct {
-	InValue chan TaggedValueWithCtx[T]
-	InRes   chan TaggedValueWithCtx[*scheduler.Resource]
-	OutVal  chan TaggedValueWithCtx[T]
-	OutRes  chan TaggedValueWithCtx[*scheduler.Resource]
+	InValue RefCountedChan[TaggedValueWithCtx[T]]
+	InRes   RefCountedChan[TaggedValueWithCtx[*scheduler.Resource]]
+	OutVal  RefCountedChan[TaggedValueWithCtx[T]]
+	OutRes  RefCountedChan[TaggedValueWithCtx[*scheduler.Resource]]
 }
 
 func NewAcquireResource[T any]() AcquireResource[T] {
 	return AcquireResource[T]{
-		InValue: make(chan TaggedValueWithCtx[T]),
-		InRes:   make(chan TaggedValueWithCtx[*scheduler.Resource]),
-		OutVal:  make(chan TaggedValueWithCtx[T]),
-		OutRes:  make(chan TaggedValueWithCtx[*scheduler.Resource]),
+		InValue: NewRefCountedChan[TaggedValueWithCtx[T]](),
+		InRes:   NewRefCountedChan[TaggedValueWithCtx[*scheduler.Resource]](),
+		OutVal:  NewRefCountedChan[TaggedValueWithCtx[T]](),
+		OutRes:  NewRefCountedChan[TaggedValueWithCtx[*scheduler.Resource]](),
 	}
 }
 
 type ImageInCvmfs struct {
-	In            chan TaggedValueWithCtx[lib.Image]
-	OutInCvmfs    chan TaggedValueWithCtx[lib.Image]
-	OutNotInCvmfs chan TaggedValueWithCtx[lib.Image]
+	In            RefCountedChan[TaggedValueWithCtx[lib.Image]]
+	OutInCvmfs    RefCountedChan[TaggedValueWithCtx[lib.Image]]
+	OutNotInCvmfs RefCountedChan[TaggedValueWithCtx[lib.Image]]
 	cvmfsRepo     string
 }
 
 func NewImageInCvmfs(cvmfsRepo string) ImageInCvmfs {
 	return ImageInCvmfs{
-		In:            make(chan TaggedValueWithCtx[lib.Image]),
-		OutInCvmfs:    make(chan TaggedValueWithCtx[lib.Image]),
-		OutNotInCvmfs: make(chan TaggedValueWithCtx[lib.Image]),
+		In:            NewRefCountedChan[TaggedValueWithCtx[lib.Image]](),
+		OutInCvmfs:    NewRefCountedChan[TaggedValueWithCtx[lib.Image]](),
+		OutNotInCvmfs: NewRefCountedChan[TaggedValueWithCtx[lib.Image]](),
 		cvmfsRepo:     cvmfsRepo,
 	}
 }
 
 func (m ImageInCvmfs) Process() {
-	defer close(m.OutInCvmfs)
-	defer close(m.OutNotInCvmfs)
-	for input := range m.In {
+	defer m.OutInCvmfs.Close()
+	defer m.OutNotInCvmfs.Close()
+
+	for input := range m.In.ch {
+		logger := input.Ctx.Value("logger").(*LoggerWithBuffer).GetLogger()
+
 		manifestPath := filepath.Join("/", "cvmfs", m.cvmfsRepo, ".metadata", input.Value.GetSimpleName(), "manifest.json")
 		if lib.AlreadyConverted(manifestPath, input.Value.Manifest.Config.Digest) == lib.ConversionMatch {
-			fmt.Printf("Image %s is already in CVMFS\n", input.Value.GetSimpleName())
-			m.OutInCvmfs <- input
+			logger.Printf("[INFO] Image %s is already in CVMFS\n", input.Value.GetSimpleName())
+			m.OutInCvmfs.ch <- input
 		} else {
-			fmt.Printf("Image %s is not in CVMFS\n", input.Value.GetSimpleName())
-			m.OutNotInCvmfs <- input
+			logger.Printf("[INFO] Image %s is NOT already in CVMFS\n", input.Value.GetSimpleName())
+			m.OutNotInCvmfs.ch <- input
 		}
 	}
 	fmt.Println("ImageInCvmfs done")

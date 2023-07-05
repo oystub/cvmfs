@@ -2,12 +2,14 @@ package concurrency
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 )
+
+var Idcounter int64 = 0
 
 type Tag struct {
 	id     uuid.UUID
@@ -19,38 +21,63 @@ type RefCountedChan[V any] struct {
 	ch   chan V
 	wg   *sync.WaitGroup
 	once *sync.Once
+	id   int64
 }
 
 func NewRefCountedChan[V any]() RefCountedChan[V] {
+	id := atomic.AddInt64(&Idcounter, 1)
 	return RefCountedChan[V]{
-		ch: make(chan V),
-		wg: &sync.WaitGroup{},
+		ch:   make(chan V),
+		wg:   &sync.WaitGroup{},
+		once: &sync.Once{},
+		id:   id,
 	}
 }
 
-func (rc *RefCountedChan[T]) Connect(in <-chan T, label string) {
-	rc.wg.Add(1)
+func Connect[T any](in RefCountedChan[T], out RefCountedChan[T]) {
+	out.wg.Add(1)
 	go func() {
-		defer rc.wg.Done() // Decrement the WaitGroup counter when the goroutine completes.
-		for v := range in {
-			rc.ch <- v
+		for v := range in.ch {
+			out.ch <- v
 		}
+		out.wg.Done()
 		// Close the channel when all inputs have been drained.
-		rc.once.Do(func() {
-			go rc.closeWhenDone()
+		out.once.Do(func() {
+			go out.closeWhenDone()
+		})
+	}()
+}
+
+func ConnectWithTypeAssert[T1 any, T2 any](in RefCountedChan[TaggedValueWithCtx[T1]], out RefCountedChan[TaggedValueWithCtx[T2]]) {
+	out.wg.Add(1)
+	go func() {
+		for v := range in.ch {
+			// Assert the concrete type of v.Value and use it to create a new TaggedValueWithCtx[T2]
+			out.ch <- TaggedValueWithCtx[T2]{
+				TagStack: v.TagStack,
+				Ctx:      v.Ctx,
+				Value:    any(v.Value).(T2), // type assert the Value field separately
+			}
+		}
+		out.wg.Done()
+		// Close the channel when all inputs have been drained.
+		out.once.Do(func() {
+			go out.closeWhenDone()
 		})
 	}()
 }
 
 func (rc *RefCountedChan[V]) Close() {
-	rc.once.Do(func() {
-		close(rc.ch)
-	})
+	close(rc.ch)
 }
 
 func (rc *RefCountedChan[T]) closeWhenDone() {
-	rc.wg.Wait() // Block until all the connected goroutines have completed.
+	rc.wg.Wait()
 	close(rc.ch)
+}
+
+func (rc *RefCountedChan[V]) Chan() chan V {
+	return rc.ch
 }
 
 type TaggedValueWithCtx[V any] struct {
@@ -101,6 +128,12 @@ func (s Sync[V]) Process() {
 			defer wg.Done()
 			for v := range inCh.ch {
 				mux.Lock()
+				// Is this the first value received for this tag?
+				// If so, the id should not be in the map yet.
+				if valuesByTag[v.TagStack[0].id] == nil {
+					valuesByTag[v.TagStack[0].id] = make([]TaggedValueWithCtx[V], 0, len(s.In))
+				}
+
 				// Append the received value to the slice for its tag.
 				tag := v.TagStack[0].id
 				valuesByTag[tag] = append(valuesByTag[tag], v)
@@ -109,12 +142,12 @@ func (s Sync[V]) Process() {
 				if len(valuesByTag[tag]) == len(s.In) {
 					// If we have, send all the values to the corresponding output channel.
 					wg2 := sync.WaitGroup{}
-					for i, val := range valuesByTag[tag] {
+					for j, val := range valuesByTag[tag] {
 						wg2.Add(1)
-						go func(val TaggedValueWithCtx[V], i int) {
-							s.Out[i].ch <- val
+						go func(val TaggedValueWithCtx[V], chNr int) {
+							s.Out[chNr].ch <- val
 							wg2.Done()
-						}(val, i)
+						}(val, j)
 					}
 					wg2.Wait()
 					delete(valuesByTag, tag)
@@ -135,51 +168,49 @@ type Broadcast[V any] struct {
 }
 
 func NewBroadcast[V any](numOutputs int) Broadcast[V] {
-	out := make([]chan TaggedValueWithCtx[V], numOutputs)
+	out := make([]RefCountedChan[TaggedValueWithCtx[V]], numOutputs)
 	for i := 0; i < numOutputs; i++ {
-		out[i] = make(chan TaggedValueWithCtx[V])
+		out[i] = NewRefCountedChan[TaggedValueWithCtx[V]]()
 	}
 
 	return Broadcast[V]{
-		In:  make(chan TaggedValueWithCtx[V]),
+		In:  NewRefCountedChan[TaggedValueWithCtx[V]](),
 		Out: out,
 	}
 }
 
 func (b Broadcast[V]) Process() {
-	for input := range b.In {
+	for input := range b.In.ch {
 		for _, output := range b.Out {
-			output <- input
+			output.ch <- input
 		}
 	}
 	for _, output := range b.Out {
-		close(output)
+		output.Close()
 	}
 }
 
 type Gather[V any] struct {
-	In  chan TaggedValueWithCtx[V]
-	Out chan TaggedValueWithCtx[[]V]
+	In  RefCountedChan[TaggedValueWithCtx[V]]
+	Out RefCountedChan[TaggedValueWithCtx[[]V]]
 }
 
 func NewGather[V any]() Gather[V] {
 	return Gather[V]{
-		In:  make(chan TaggedValueWithCtx[V]),
-		Out: make(chan TaggedValueWithCtx[[]V]),
+		In:  NewRefCountedChan[TaggedValueWithCtx[V]](),
+		Out: NewRefCountedChan[TaggedValueWithCtx[[]V]](),
 	}
 }
 
 func (g Gather[V]) Process() {
-	// Use a map to keep track of values received for each tag.
-	// The map keys are the tags and the values are slices of TaggedValueWithCtx.
-	defer close(g.Out)
+	defer g.Out.Close()
 
+	// Use a map to keep track of values received for each tag.
 	valuesByTag := make(map[uuid.UUID][]TaggedValueWithCtx[V])
 	mux := &sync.Mutex{}
 
 	// Start a goroutine to read from each input channel.
-
-	for v := range g.In {
+	for v := range g.In.ch {
 		mux.Lock()
 
 		// Append the received value to the slice for its tag.
@@ -204,7 +235,7 @@ func (g Gather[V]) Process() {
 				outputValues[i] = val.Value
 			}
 
-			g.Out <- TaggedValueWithCtx[[]V]{
+			g.Out.ch <- TaggedValueWithCtx[[]V]{
 				TagStack: newTagStack,
 				Ctx:      valuesByTag[tag][0].Ctx,
 				Value:    outputValues,
@@ -217,44 +248,14 @@ func (g Gather[V]) Process() {
 }
 
 type Sink[V any] struct {
-	In    chan TaggedValueWithCtx[V]
-	Label string
+	In RefCountedChan[TaggedValueWithCtx[V]]
 }
 
 func NewSink[V any]() Sink[V] {
 	return Sink[V]{
-		In: make(chan TaggedValueWithCtx[V]),
+		In: NewRefCountedChan[TaggedValueWithCtx[V]](),
 	}
 }
 
 func (s Sink[V]) Process() {
-	for range s.In {
-		if s.Label != "" {
-			fmt.Printf("Sink %s received value\n", s.Label)
-		}
-	}
-}
-
-func Connect[T any](in <-chan TaggedValueWithCtx[T], out chan<- TaggedValueWithCtx[T], label string) {
-	go func() {
-		for v := range in {
-			fmt.Printf("Connecting: %s\n", label)
-			out <- v
-		}
-		close(out)
-	}()
-}
-
-func ConnectWithTypeAssert[T1 any, T2 any](in <-chan TaggedValueWithCtx[T1], out chan<- TaggedValueWithCtx[T2]) {
-	go func() {
-		for v := range in {
-
-			out <- TaggedValueWithCtx[T2]{
-				TagStack: v.TagStack,
-				Ctx:      v.Ctx,
-				Value:    any(v.Value).(T2),
-			}
-		}
-		close(out)
-	}()
 }

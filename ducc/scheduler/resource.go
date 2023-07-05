@@ -47,7 +47,7 @@ func (r *Resource) ProhibitUntil(t time.Time) {
 		r.prohibitedUntil = t
 		r.cv.L.Unlock()
 		go func() {
-			time.Sleep(t.Sub(time.Now()))
+			time.Sleep(time.Until(t))
 			r.cv.Broadcast()
 		}()
 		return
@@ -58,7 +58,7 @@ func (r *Resource) ProhibitUntil(t time.Time) {
 func (r *Resource) Release() {
 	r.cv.L.Lock()
 	r.available++
-	r.cv.Signal()
+	r.cv.Broadcast()
 	r.cv.L.Unlock()
 }
 
@@ -71,17 +71,6 @@ func (r *Resource) Acquire() {
 	r.cv.L.Unlock()
 }
 
-func (r *Resource) TryAcquire() bool {
-	r.cv.L.Lock()
-	if r.available == 0 {
-		r.cv.L.Unlock()
-		return false
-	}
-	r.available--
-	r.cv.L.Unlock()
-	return true
-}
-
 func AcquireMultiple(resources []*Resource) {
 	// Sort resources by order
 	sort.Slice(resources, func(i, j int) bool {
@@ -90,7 +79,6 @@ func AcquireMultiple(resources []*Resource) {
 	for _, r := range resources {
 		r.Acquire()
 	}
-
 }
 
 func ReleaseMultiple(resources []*Resource) {

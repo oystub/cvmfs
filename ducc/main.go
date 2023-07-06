@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sync"
@@ -27,8 +28,7 @@ func main() {
 		Tag:        "24.2.0",
 	}
 
-	logger := concurrency.NewLoggerWithBuffer()
-	ctx, _ := context.WithCancel(context.WithValue(context.Background(), "logger", &logger))
+	ctx, _ := context.WithCancel(context.Background())
 
 	pipeline := concurrency.NewUpdateImage("local.test.repo")
 
@@ -38,27 +38,15 @@ func main() {
 		pipeline.Process()
 		wg.Done()
 	}()
-	start := concurrency.NewRefCountedChan[concurrency.TaggedValueWithCtx[lib.Image]]()
+	start := concurrency.NewRefCountedChan[concurrency.InformationPacket[lib.Image]]()
 	concurrency.Connect(start, pipeline.In)
-	start.Chan() <- concurrency.NewTaggedValueWithCtx[lib.Image](testImage, ctx)
+	firstFrame := concurrency.NewInformationPacket[lib.Image](testImage, ctx, "Root")
+	firstFrame.Handle.Log.GetLogger().Println("Starting pipeline")
+	start.Chan() <- firstFrame
 	start.Close()
-	//daemon.Main()
 
-	//cmd.EntryPoint()
 	wg.Wait()
-
-	fmt.Print(logger.GetText())
+	buf := bytes.NewBuffer([]byte{})
+	firstFrame.Handle.GetAllLogs(buf, 0)
+	fmt.Print(buf.String())
 }
-
-/*Id          int
-User        string
-Scheme      string
-Registry    string
-Repository  string
-Tag         string
-Digest      string
-IsThin      bool
-TagWildcard bool
-Manifest    *da.Manifest
-OCIImage    *image.Image
-*/

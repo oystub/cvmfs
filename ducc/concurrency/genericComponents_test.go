@@ -5,15 +5,12 @@ import (
 	"math/rand"
 	"sync"
 	"testing"
-
-	"github.com/google/uuid"
 )
 
 func TestSync(t *testing.T) {
-	Idcounter = 0
-	in1 := NewRefCountedChan[TaggedValueWithCtx[int]]()
-	in2 := NewRefCountedChan[TaggedValueWithCtx[int]]()
-	in3 := NewRefCountedChan[TaggedValueWithCtx[int]]()
+	in1 := NewRefCountedChan[InformationPacket[int]]()
+	in2 := NewRefCountedChan[InformationPacket[int]]()
+	in3 := NewRefCountedChan[InformationPacket[int]]()
 	syncer := NewSync[int](3)
 
 	Connect(in1, syncer.In[0])
@@ -23,15 +20,13 @@ func TestSync(t *testing.T) {
 	fmt.Println("Connected all channels")
 
 	seqLength := 10
-	seq := make([]TaggedValueWithCtx[int], seqLength)
+	seq := make([]InformationPacket[int], seqLength)
 	for i := 0; i < seqLength; i++ {
-		seq[i] = TaggedValueWithCtx[int]{
-			TagStack: []Tag{{id: uuid.New()}},
-			Value:    i,
-		}
+		seq[i] = NewInformationPacket[int](i, nil, fmt.Sprintf("Root%d", i))
+
 	}
-	seq2 := make([]TaggedValueWithCtx[int], seqLength)
-	seq3 := make([]TaggedValueWithCtx[int], seqLength)
+	seq2 := make([]InformationPacket[int], seqLength)
+	seq3 := make([]InformationPacket[int], seqLength)
 	copy(seq2, seq)
 	copy(seq3, seq)
 
@@ -44,7 +39,7 @@ func TestSync(t *testing.T) {
 	})
 
 	go syncer.Process()
-	inputFunc := func(c RefCountedChan[TaggedValueWithCtx[int]], s []TaggedValueWithCtx[int]) {
+	inputFunc := func(c RefCountedChan[InformationPacket[int]], s []InformationPacket[int]) {
 		defer c.Close()
 		fmt.Printf("Sending values to channel %d\n", c.id)
 		for _, val := range s {
@@ -70,7 +65,7 @@ func TestSync(t *testing.T) {
 			}
 			break
 		}
-		if val1.TagStack[0] != val2.TagStack[0] || val1.TagStack[0] != val3.TagStack[0] {
+		if val1.Handle.id != val2.Handle.id || val1.Handle.id != val3.Handle.id {
 			t.Errorf("Tags do not match")
 		}
 		count++

@@ -1,6 +1,7 @@
 package concurrency
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ var localLayerPath string
 
 var layerCacheCv sync.Cond
 var layerCache map[string]localLayerInternal
+var cvmfsRepo string
 
 type localLayerInternal struct {
 	Ready              bool
@@ -36,7 +38,11 @@ type LayerLease struct {
 	Type               LayerLeaseType
 }
 
-func initLayerCache(cachePath string, cvmfsRepo string) {
+func (l LayerLease) Release() {
+	ReleaseLayer(l)
+}
+
+func initLayerCache(cachePath string, cvmfsRepository string) {
 	// Create the local tar file cache directory if it doesn't exist
 	err := os.MkdirAll(cachePath, 0755)
 	if err != nil {
@@ -46,10 +52,32 @@ func initLayerCache(cachePath string, cvmfsRepo string) {
 	localLayerPath = cachePath
 	layerCacheCv = sync.Cond{L: &sync.Mutex{}}
 	layerCache = make(map[string]localLayerInternal)
+	cvmfsRepo = cvmfsRepository
 }
 
+// Request a layer. Preferably from CVMS, then from the local cache, then from the remote registry.
+// If multiple goroutines request the same layer, only one will download it and the others will wait for it to be downloaded.
+// The returned lease must be released when the layer is no longer needed.
+// When all leases are released, the layer is deleted from the local cache.
 func RequestLayer(layer lib.Layer) (LayerLease, error) {
 	// Check if the layer is in CVMFS. If it is, return a CVMFS lease.
+	layerCvmfsPath := fmt.Sprintf("/cvmfs/%s/.layers/%s", cvmfsRepo, layer.Digest)
+	_, err := os.Stat(layerCvmfsPath)
+
+	if err == nil {
+		// The layer is in CVMFS, return a CVMFS lease
+		return LayerLease{
+			Path:               layerCvmfsPath,
+			CompressedDigest:   layer.Digest,
+			UncompressedDigest: layer.Digest,
+			Type:               LL_CVMFS,
+		}, nil
+	}
+
+	if !errors.Is(err, os.ErrNotExist) {
+		// Some other error happened, return it
+		return LayerLease{}, fmt.Errorf("error checking if layer is in CVMFS: %s", err)
+	}
 
 	// Check if the layer is already in the local cache
 	layerCacheCv.L.Lock()
@@ -79,7 +107,7 @@ func RequestLayer(layer lib.Layer) (LayerLease, error) {
 		}, nil
 	}
 
-	// Layer is not in the cache, download it
+	// Layer is not in the cache, we need to download it
 
 	// Let others know that we are downloading the layer
 	layerCache[layer.Digest] = localLayerInternal{
@@ -140,7 +168,13 @@ func RequestLayer(layer lib.Layer) (LayerLease, error) {
 	}, nil
 }
 
+// Release a layer lease. When all leases are released, the layer is deleted from the local cache.
 func ReleaseLayer(lease LayerLease) {
+	if lease.Type == LL_CVMFS {
+		// Nothing to do here
+		return
+	}
+
 	layerCacheCv.L.Lock()
 	defer layerCacheCv.L.Unlock()
 

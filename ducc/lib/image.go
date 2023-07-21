@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +41,7 @@ type Image struct {
 	Digest      string
 	IsThin      bool
 	TagWildcard bool
+	RegistryRef *ContainerRegistry
 	Manifest    *da.Manifest
 	OCIImage    *image.Image
 }
@@ -427,26 +427,6 @@ func (img *Image) ExpandWildcard() (<-chan *Image, <-chan *Image, error) {
 	}
 
 	return r1, r2, nil
-}
-
-func filterUsingGlob(pattern string, toFilter []string) ([]string, error) {
-	result := make([]string, 0)
-	regexPattern := strings.ReplaceAll(pattern, "*", ".*")
-	regex, err := regexp.Compile(regexPattern)
-	if err != nil {
-		return result, err
-	}
-	regex.Longest()
-	for _, toCheck := range toFilter {
-		s := regex.FindString(toCheck)
-		if s == "" {
-			continue
-		}
-		if s == toCheck {
-			result = append(result, s)
-		}
-	}
-	return result, nil
 }
 
 // here is where in the FS we are going to store the singularity image

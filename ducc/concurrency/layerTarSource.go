@@ -10,12 +10,46 @@ import (
 	"sync"
 
 	"github.com/cvmfs/ducc/lib"
+	"github.com/opencontainers/go-digest"
 )
 
 var localTarFilePath string
 
 var layerTarFileCacheCv sync.Cond
 var layerTarFileCache map[string]layerTarFileInternal
+
+type TarDownloadJob struct {
+	// The compressed digest of the gzipped tar file
+	CompressedDigest digest.Digest
+	// The size in bytes of the compressed tar file
+	CompressedSize int64
+	// Pointer to the container registry from which to download the tar file
+	Registry *lib.ContainerRegistry
+	// Status of the download job
+}
+
+type TarFileDownloader struct {
+	// The path to the local tar file cache
+	CachePath string
+
+	// Jobs to be processed
+	JobsMutex sync.Mutex
+	Jobs      []*TarDownloadJob
+
+	// The number of concurrent downloads
+}
+
+func (tfd *TarFileDownloader) Work() {
+	// Should feature a way to stop the entire downloader, canceling all downloads
+
+	// Organize the jobs in some smart way
+
+	// Start downloads according to the number of concurrent downloads
+
+	// Wait for all downloads to finish
+
+	// Should be able to cancel a download
+}
 
 type layerTarFileInternal struct {
 	Ready              bool
@@ -29,6 +63,10 @@ type LayerTarFileLease struct {
 	Path               string
 	CompressedDigest   string
 	UncompressedDigest string
+}
+
+func (l LayerTarFileLease) Release() {
+	ReleaseLayerTar(l)
 }
 
 func initLayerTarFileCache(cachePath string) {
@@ -121,8 +159,8 @@ func ReleaseLayerTar(lease LayerTarFileLease) {
 	layerTarFileCache[lease.CompressedDigest] = cachedFile
 }
 
-func fetchLayerTar(layer lib.Layer, tempdir string) (path string, uncompressedDigest string, errorOut error) {
-	url := fmt.Sprintf("%s/blobs/%s", layer.Tag.Repository.BaseUrl(), layer.Digest)
+func fetchLayerTar(repository *lib.ContainerRepository, compressedDigest digest.Digest, tempdir string) (path string, uncompressedDigest string, errorOut error) {
+	url := fmt.Sprintf("%s/blobs/%s", repository.BaseUrl(), compressedDigest.String())
 
 	fmt.Printf("Fetching layer tar file from %s\n", url)
 
@@ -131,7 +169,7 @@ func fetchLayerTar(layer lib.Layer, tempdir string) (path string, uncompressedDi
 		errorOut = fmt.Errorf("error in creating request: %s", err)
 		return
 	}
-	res, err := layer.Tag.Repository.Registry.PerformRequest(req)
+	res, err := repository.Registry.PerformRequest(req)
 	if err != nil {
 		return "", "", fmt.Errorf("error in fetching layer: %s", err)
 	}

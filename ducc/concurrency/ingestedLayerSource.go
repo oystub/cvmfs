@@ -1,14 +1,15 @@
 package concurrency
 
+/*
 import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 
 	cvmfs "github.com/cvmfs/ducc/cvmfs"
 	"github.com/cvmfs/ducc/lib"
+	"github.com/opencontainers/go-digest"
 )
 
 var layerIngestCv sync.Cond
@@ -29,7 +30,7 @@ func RequestIngestedLayer(cvmfsRepo string, layer lib.Layer) error {
 	layerIngestCv.L.Lock()
 	defer layerIngestCv.L.Unlock()
 
-	mapKey := cvmfsRepo + layer.Digest
+	mapKey := cvmfsRepo + layer.Digest.String()
 
 	status, ok := layerIngestCount[mapKey]
 	if ok {
@@ -51,7 +52,7 @@ func RequestIngestedLayer(cvmfsRepo string, layer lib.Layer) error {
 
 		status.WaitCount--
 		if status.WaitCount == 0 {
-			delete(layerIngestCount, layer.Digest)
+			delete(layerIngestCount, layer.Digest.String())
 		} else {
 			layerIngestCount[mapKey] = status
 		}
@@ -79,7 +80,7 @@ func RequestIngestedLayer(cvmfsRepo string, layer lib.Layer) error {
 		status.Ready = true
 		status.WaitCount--
 		if status.WaitCount == 0 {
-			delete(layerIngestCount, layer.Digest)
+			delete(layerIngestCount, layer.Digest.String())
 		} else {
 			layerIngestCount[mapKey] = status
 		}
@@ -96,7 +97,7 @@ func RequestIngestedLayer(cvmfsRepo string, layer lib.Layer) error {
 	status.Ready = true
 	status.WaitCount--
 	if status.WaitCount == 0 {
-		delete(layerIngestCount, layer.Digest)
+		delete(layerIngestCount, layer.Digest.String())
 	} else {
 		layerIngestCount[mapKey] = status
 	}
@@ -158,7 +159,7 @@ func IngestLayer(cvmfsRepo string, layer lib.Layer) error {
 		return fmt.Errorf("error ingesting layer: %s", err)
 	}
 	// Save layer metadata
-	err = lib.StoreLayerInfo(cvmfsRepo, strings.Split(layer.Digest, ":")[1], readHashCloseSizer)
+	err = lib.StoreLayerInfo(cvmfsRepo, layer.Digest.Encoded(), readHashCloseSizer)
 	if err != nil {
 		fmt.Printf("Error storing layer metadata: %s\n", err)
 		cvmfs.IngestDelete(cvmfsRepo, layerPath(layer.Digest))
@@ -173,11 +174,8 @@ func IngestLayer(cvmfsRepo string, layer lib.Layer) error {
 
 }
 
-func layerPath(layerDigest string) string {
+func layerPath(layerDigest digest.Digest) string {
 	// If the digest begins with an algorithm and : (e.g. sha256:), remove them
-	if strings.Contains(layerDigest, ":") {
-		parts := strings.Split(layerDigest, ":")
-		layerDigest = parts[1]
-	}
-	return fmt.Sprintf("/.layers/%s/%s", layerDigest[0:2], layerDigest)
+	return fmt.Sprintf("/.layers/%s/%s", layerDigest.Encoded()[0:2], layerDigest.Encoded())
 }
+*/

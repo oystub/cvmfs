@@ -17,6 +17,11 @@ type Tag struct {
 	Manifest   dockerutil.Manifest // TODO: Determine what type this should be
 }
 
+type TagWithManifest struct {
+	Tag
+	Manifest *dockerutil.Manifest
+}
+
 func (t *Tag) BaseUrl() string {
 	if t.Digest != "" {
 		return fmt.Sprintf("%s/%s", t.Repository.BaseUrl(), t.Name)

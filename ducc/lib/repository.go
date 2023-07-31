@@ -6,11 +6,37 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 )
+
+var localContainerRepositoriesMutex sync.Mutex
+var localContainerRepositories map[string]*ContainerRepository
+
+func InitContainerRepositories() {
+	localContainerRepositories = make(map[string]*ContainerRepository)
+}
 
 type ContainerRepository struct {
 	Registry *ContainerRegistry
 	Name     string
+}
+
+func GetOrCreateContainerRepository(registry *ContainerRegistry, name string) *ContainerRepository {
+	localContainerRepositoriesMutex.Lock()
+	defer localContainerRepositoriesMutex.Unlock()
+
+	if existingRepository, ok := localContainerRepositories[name]; ok {
+		// Repository already exists
+		return existingRepository
+	}
+
+	// Repository does not exist, create it
+	newRepository := ContainerRepository{
+		Registry: registry,
+		Name:     name,
+	}
+
+	return &newRepository
 }
 
 func (cr ContainerRepository) BaseUrl() string {
@@ -19,7 +45,6 @@ func (cr ContainerRepository) BaseUrl() string {
 
 func (cr *ContainerRepository) FetchTags(filter string) ([]*Tag, error) {
 	url := fmt.Sprintf("%s/tags/list", cr.BaseUrl())
-	fmt.Printf("Fetching tags from %s\n", url)
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Add("Accept", "application/json")
 	res, err := cr.Registry.PerformRequest(req)

@@ -4,11 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/cvmfs/ducc/db"
 	"github.com/cvmfs/ducc/lib"
 	"github.com/cvmfs/ducc/localdb"
 	"github.com/cvmfs/ducc/scheduler"
@@ -16,7 +19,7 @@ import (
 
 const wish_path = "/wishes"
 
-var db localdb.LocalDb
+var db_ localdb.LocalDb
 
 type ctxKey struct{}
 
@@ -48,7 +51,7 @@ func (this *PatternHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func Init() {
-	db.Init("ducc.db")
+	db_.Init("ducc.db")
 }
 
 type route struct {
@@ -94,7 +97,7 @@ func RunRawRestApi() {
 		NewRoute("POST", "/jobs/([0-9]+)/cancel", notImplementedHandler),
 
 		// Recipes
-		NewRoute("POST", "/recipe", notImplementedHandler),
+		NewRoute("POST", "/recipes/.+", applyRecipeHandler), // OK
 
 		// Webhooks
 		NewRoute("POST", "/webhooks/harbor", notImplementedHandler),
@@ -116,7 +119,7 @@ func notImplementedHandler(w http.ResponseWriter, r *http.Request) {
 // Endpoint for GET `/wishes/<wish-id>`
 func getWishHandler(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(getField(r, 0), 10, 64)
-	wish, err := db.GetWishById(lib.ObjectId(id))
+	wish, err := db_.GetWishById(lib.ObjectId(id))
 	if err == sql.ErrNoRows {
 		w.WriteHeader(http.StatusNotFound)
 		w.Write([]byte("Wish not found"))
@@ -184,5 +187,36 @@ func createWishHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write(wishJson)
-	return
+}
+
+func applyRecipeHandler(w http.ResponseWriter, r *http.Request) {
+	source := getField(r, 0)
+
+	// TODO: Validate source string
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	// Parse the recipe
+	recipe, err := db.ParseYamlRecipeV1(body, source)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(fmt.Sprintf("Invalid recipe: %s", err.Error())))
+		return
+	}
+
+	// Import the recipe
+	newWishes, deletedWishes, err := db.ImportRecipeV1(recipe)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	// TODO: Schedule update of the new wishes
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(fmt.Sprintf("Successfully applied recipe. Imported %d wish(es), deleted %d wish(es)", len(newWishes), len(deletedWishes))))
 }

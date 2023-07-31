@@ -8,10 +8,14 @@ import (
 )
 
 const imageIdentifierSqlFieldsOrdered string = "digest, tag, registry_scheme, registry_hostname, repository"
+
+// const imageIdentifierSqlFieldsQuery string = "digest=? AND tag=? AND registry_scheme=? AND registry_hostname=? AND repository=?"
+const imageIdentifierSqlFieldsQueryTag string = "digest IS NULL AND tag=? AND registry_scheme=? AND registry_hostname=? AND repository=?"
+const imageIdentifierSqlFieldsQueryDigest string = "digest=? AND tag IS NULL AND registry_scheme=? AND registry_hostname=? AND repository=?"
 const imageIdentifierSqlFieldsQs string = "?,?,?,?,?"
 const imageSqlFieldsOrdered = "id, digest, tag, registry_scheme, registry_hostname, repository"
 
-type ImageID uuid.UUID
+type ImageID = uuid.UUID
 
 type Image struct {
 	ID             ImageID
@@ -42,7 +46,8 @@ func CreateImages(tx *sql.Tx, images []Image) ([]Image, error) {
 	ownTx := false
 	if tx == nil {
 		ownTx = true
-		tx, err := GetTransaction()
+		var err error
+		tx, err = GetTransaction()
 		if err != nil {
 			return nil, err
 		}
@@ -66,6 +71,7 @@ func CreateImages(tx *sql.Tx, images []Image) ([]Image, error) {
 			String: image.Tag,
 			Valid:  image.Tag != "",
 		}
+		image.ID = ImageID(uuid.New())
 		row := prepStmnt.QueryRow(image.ID, digest, tag, image.RegistryScheme, image.RegistryHost, image.Repository)
 		image, err := parseImageFromRow(row)
 		if err != nil {
@@ -104,31 +110,35 @@ func GetImagesByValues(tx *sql.Tx, images []Image) ([]Image, error) {
 	ownTx := false
 	if tx == nil {
 		ownTx = true
-		tx, err := GetTransaction()
+		var err error
+		tx, err = GetTransaction()
 		if err != nil {
 			return nil, err
 		}
 		defer tx.Rollback()
 	}
 
-	const stmnt string = "SELECT " + imageSqlFieldsOrdered + " FROM images WHERE (" + imageIdentifierSqlFieldsOrdered + ") IN ((" + imageIdentifierSqlFieldsQs + "))"
-	prepStmnt, err := tx.Prepare(stmnt)
+	const stmntTag string = "SELECT " + imageSqlFieldsOrdered + " FROM images WHERE " + imageIdentifierSqlFieldsQueryTag
+	const stmntDigest string = "SELECT " + imageSqlFieldsOrdered + " FROM images WHERE " + imageIdentifierSqlFieldsQueryDigest
+	prepStmntTag, err := tx.Prepare(stmntTag)
 	if err != nil {
 		return nil, err
 	}
-	defer prepStmnt.Close()
+	defer prepStmntTag.Close()
+	prepStmntDigest, err := tx.Prepare(stmntDigest)
+	if err != nil {
+		return nil, err
+	}
+	defer prepStmntDigest.Close()
 
 	out := make([]Image, 0, len(images))
 	for _, image := range images {
-		digestStr := sql.NullString{
-			String: image.Digest.String(),
-			Valid:  image.Digest != "",
+		var row *sql.Row
+		if image.Digest != "" {
+			row = prepStmntDigest.QueryRow(image.Digest.String(), image.RegistryScheme, image.RegistryHost, image.Repository)
+		} else {
+			row = prepStmntTag.QueryRow(image.Tag, image.RegistryScheme, image.RegistryHost, image.Repository)
 		}
-		tag := sql.NullString{
-			String: image.Tag,
-			Valid:  image.Tag != "",
-		}
-		row := prepStmnt.QueryRow(digestStr, tag, image.RegistryScheme, image.RegistryHost, image.Repository)
 		image, err := parseImageFromRow(row)
 		if err != nil {
 			return nil, err
@@ -152,7 +162,7 @@ func parseImageFromRow(row scannableRow) (Image, error) {
 	var image Image
 	var digestStr sql.NullString
 	var tag sql.NullString
-	err := row.Scan(image.ID, digestStr, tag, image.RegistryScheme, image.RegistryHost, image.Repository)
+	err := row.Scan(&image.ID, &digestStr, &tag, &image.RegistryScheme, &image.RegistryHost, &image.Repository)
 	if err != nil {
 		return Image{}, err
 	}

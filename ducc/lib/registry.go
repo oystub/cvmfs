@@ -6,14 +6,42 @@ import (
 	"sync"
 )
 
+var localRegistriesMutex sync.Mutex
+var localRegistries map[ContainerRegistryIdentifier]*ContainerRegistry
+
+func InitRegistries() {
+	localRegistriesMutex.Lock()
+	defer localRegistriesMutex.Unlock()
+	localRegistries = make(map[ContainerRegistryIdentifier]*ContainerRegistry)
+}
+
+func GetOrCreateRegistry(identifier ContainerRegistryIdentifier) *ContainerRegistry {
+	localRegistriesMutex.Lock()
+	defer localRegistriesMutex.Unlock()
+
+	if existingRegistry, ok := localRegistries[identifier]; ok {
+		// Registry already exists
+		return existingRegistry
+	}
+
+	// Registry does not exist, create it
+	newRegistry := ContainerRegistry{
+		Identifier: identifier,
+		TokenCv:    sync.NewCond(&sync.Mutex{}),
+		Client:     &http.Client{},
+	}
+
+	return &newRegistry
+}
+
 type ContainerRegistryCredentials struct {
 	Username string
 	Password string
 }
 
 type ContainerRegistryIdentifier struct {
-	Schema string
-	Host   string
+	Scheme   string
+	Hostname string
 	//port string TODO: Determine if this is needed
 	//proxy string TODO: Determine if this is needed
 
@@ -35,7 +63,7 @@ type ContainerRegistry struct {
 }
 
 func (cr ContainerRegistry) baseUrl() string {
-	return fmt.Sprintf("%s://%s/v2", cr.Identifier.Schema, cr.Identifier.Host)
+	return fmt.Sprintf("%s://%s/v2", cr.Identifier.Scheme, cr.Identifier.Hostname)
 }
 
 func (cr *ContainerRegistry) GetToken() string {
@@ -114,7 +142,6 @@ retryRequest:
 				return nil, err
 			}
 		}
-		fmt.Printf("Got token: %s\n", token)
 		cr.TokenCv.L.Lock()
 		cr.token = token
 		cr.gotToken = true

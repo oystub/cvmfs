@@ -11,7 +11,8 @@ func GetImagesByWishID(tx *sql.Tx, wishID WishID) ([]Image, error) {
 	ownTx := false
 	if tx == nil {
 		ownTx = true
-		tx, err := GetTransaction()
+		var err error
+		tx, err = GetTransaction()
 		if err != nil {
 			return nil, err
 		}
@@ -153,7 +154,8 @@ func unlinkImagesByIdFromWish(tx *sql.Tx, wishID WishID, imageIDs []ImageID) err
 	ownTx := false
 	if tx == nil {
 		ownTx = true
-		tx, err := GetTransaction()
+		var err error
+		tx, err = GetTransaction()
 		if err != nil {
 			return err
 		}
@@ -202,7 +204,8 @@ func linkImagesToWish(tx *sql.Tx, wishID WishID, imageIDs []ImageID) (updated []
 	ownTx := false
 	if tx == nil {
 		ownTx = true
-		tx, err := GetTransaction()
+		var err error
+		tx, err = GetTransaction()
 		if err != nil {
 			return nil, err
 		}

@@ -6,18 +6,19 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strings"
+
+	"github.com/opencontainers/go-digest"
 )
 
 type Layer struct {
 	Tag       *Tag
 	MediaType string
 	Size      int
-	Digest    string
+	Digest    digest.Digest
 }
 
 func (l *Layer) Fetch() error {
-	trimmedDigest := strings.TrimPrefix(l.Digest, "sha256:")
+	trimmedDigest := l.Digest.String()
 
 	// Create subdirectory based on first two characters of digest
 	subDir := fmt.Sprintf("/tmp/ducc/layers/%s/", trimmedDigest[:2])

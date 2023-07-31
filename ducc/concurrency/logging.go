@@ -2,9 +2,74 @@ package concurrency
 
 import (
 	"bytes"
+	"fmt"
 	"log"
-	"strings"
+	"sync"
+
+	"github.com/google/uuid"
 )
+
+type TaskStatus int
+
+const (
+	TS_NotStarted TaskStatus = iota
+	TS_Running
+	TS_Success
+	TS_Failure
+	TS_Aborted
+)
+
+var localHandles []*StatusHandle
+
+type StatusHandle struct {
+	Id             uuid.UUID
+	OperationType  string
+	Name           string
+	StatusMutex    *sync.Mutex
+	Status         TaskStatus
+	Logger         LoggerWithBuffer
+	RelationsMutex *sync.Mutex
+	ParentHandle   *StatusHandle
+	ChildHandles   []*StatusHandle
+}
+
+func NewStatusHandle(status TaskStatus) *StatusHandle {
+	id, _ := uuid.NewRandom()
+	sh := &StatusHandle{
+		Id:             id,
+		StatusMutex:    &sync.Mutex{},
+		Status:         status,
+		Logger:         NewLoggerWithBuffer(),
+		RelationsMutex: &sync.Mutex{},
+		ChildHandles:   []*StatusHandle{},
+	}
+	return sh
+}
+
+func (sh *StatusHandle) SetStatus(status TaskStatus) TaskStatus {
+	// If the status is already set to a final state, don't change it
+	if sh.Status == TS_Success || sh.Status == TS_Failure || sh.Status == TS_Aborted {
+		return sh.Status
+	}
+
+	sh.StatusMutex.Lock()
+	defer sh.StatusMutex.Unlock()
+	sh.Status = status
+
+	return status
+}
+
+func (sh *StatusHandle) addChildHandle(child *StatusHandle) {
+	sh.RelationsMutex.Lock()
+	defer sh.RelationsMutex.Unlock()
+	sh.ChildHandles = append(sh.ChildHandles, child)
+}
+
+func (sh *StatusHandle) printStatus() {
+	sh.StatusMutex.Lock()
+	defer sh.StatusMutex.Unlock()
+	fmt.Printf("Status of %s: %d\n", sh.Id.String(), sh.Status)
+}
 
 type LoggerWithBuffer struct {
 	logBuffer *bytes.Buffer
@@ -25,29 +90,4 @@ func (l *LoggerWithBuffer) GetLogger() *log.Logger {
 
 func (l *LoggerWithBuffer) GetText() string {
 	return l.logBuffer.String()
-}
-
-func (h *PacketHandle) GetAllLogs(buffer *bytes.Buffer, indentLevel int) {
-	// Write the logs for this event, indented by indentLevel
-	indents := string(bytes.Repeat([]byte(" "), indentLevel))
-	text := strings.Trim(h.Log.logBuffer.String(), "\n\t ")
-	if len(text) > 0 {
-		lines := bytes.Split([]byte(text), []byte("\n"))
-		for i, line := range lines {
-			lines[i] = append([]byte(indents), line...)
-		}
-		buffer.Write(bytes.Join(lines, []byte("\n")))
-		buffer.Write([]byte("\n"))
-	}
-
-	// Write the logs for all children, indented by indentLevel+1
-	h.childrenMutex.Lock()
-	for i, child := range h.children {
-		buffer.WriteString(indents + " " + child.name + ":\n")
-		child.GetAllLogs(buffer, indentLevel+1)
-		if i < len(h.children)-1 {
-			buffer.WriteString("\n")
-		}
-	}
-	h.childrenMutex.Unlock()
 }
